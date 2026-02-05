@@ -101,10 +101,17 @@ async def ask_agent(contents: list[dict], chat_id: int, *, tool_choice: str | No
     if _agent is None:
         raise RuntimeError("Agent not initialized")
 
-    # Store user messages from contents into history
+    # Store user messages from contents into history (skip images - file IDs expire)
     history = _histories.get(chat_id, [])
     for msg in contents:
         if msg.get("role") == "user":
+            content = msg.get("content")
+            # Skip messages containing input_image (file IDs expire on OpenAI)
+            if isinstance(content, list) and any(
+                isinstance(item, dict) and item.get("type") == "input_image"
+                for item in content
+            ):
+                continue
             history.append(msg)
 
     # Build API input: system prompt + history + non-user hints from contents

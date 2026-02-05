@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   sync:
+    if: github.repository == 'romanurban/telebot'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout master
@@ -23,25 +24,40 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Prepare clean copy
+        run: |
+          # Copy to temp dir, excluding personal data
+          mkdir -p ../clean-copy
+          rsync -av --exclude='.git' \
+            --exclude='prompts/neuroyury_bot' \
+            --exclude='prompts/neuromans_bot' \
+            --exclude='prompts/neuromaksim_bot' \
+            --exclude='dataset' \
+            --exclude='chat_history' \
+            ./ ../clean-copy/
+
       - name: Sync to public branch
         run: |
-          # Fetch all branches
-          git fetch origin public:public || git checkout -b public
+          # Fetch or create public branch
+          git fetch origin public:public || true
+          git checkout public || git checkout --orphan public
 
-          # Checkout public branch
-          git checkout public
+          # Clear and copy clean files
+          git rm -rf . || true
+          cp -r ../clean-copy/. ./
 
-          # Merge master into public (keep public version of conflicts)
-          git merge master -X theirs --no-edit || true
-
-          # Remove personal bot prompts (keep only default_bot)
-          rm -rf prompts/neuroyury_bot prompts/neuromans_bot prompts/neuromaksim_bot
-
-          # Stage deletions if any
           git add -A
+          git diff --staged --quiet || git commit -m "chore: sync from master"
+          git push origin public --force
 
-          # Commit if there are changes
-          git diff --staged --quiet || git commit -m "chore: sync from master (exclude personal prompts)"
-
-          # Push to public
-          git push origin public
+      - name: Push to public repository
+        run: |
+          git clone https://${{ secrets.PUBLIC_REPO_TOKEN }}@github.com/romanurban/telebot-pb.git ../telebot-pb
+          rsync -av --delete --exclude='.git' ../clean-copy/ ../telebot-pb/
+          cd ../telebot-pb
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --staged --quiet || git commit -m "Sync from private repo"
+          git branch -M main
+          git push origin main --force
