@@ -1,6 +1,7 @@
 # Telebot
 
-Async Telegram group bot powered by aiogram and the OpenAI Agents SDK. Supports multiple bot personas, MCP tools, and autonomous conversation participation.
+Async Telegram group bot powered by aiogram and the OpenAI Agents SDK.
+Supports multiple bot personas, MCP tools, and autonomous conversation participation.
 
 ## Features
 - Replies to `@bot_username` mentions using OpenAI
