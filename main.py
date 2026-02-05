@@ -2,7 +2,7 @@ import os
 import re
 import logging
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message
+from aiogram.types import Message, MessageReactionUpdated, ReactionTypeEmoji
 from aiogram.enums import ParseMode
 from aiogram import F
 import asyncio
@@ -120,6 +120,7 @@ last_activity_time = {}  # chat_id: datetime — any message, used by nudge time
 last_bot_reply_time = {}  # chat_id: datetime — bot replies only, used by probabilistic logic
 bot_unmentioned_count = {}  # chat_id: int
 messages_since_bot_reply = {}  # chat_id: int — user messages since last bot reply
+_claimed_messages: dict[int, set[int]] = {}  # chat_id -> set of message_ids claimed via reaction
 
 logging.basicConfig(level=logging.INFO)
 
@@ -160,6 +161,32 @@ dp = Dispatcher()
 def is_active_hours():
     now = datetime.now(BOT_TIMEZONE).time()
     return ACTIVE_START <= now <= ACTIVE_END
+
+
+async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
+    """Try to claim a message via reaction. Returns True if claimed by us."""
+    chat_id = message.chat.id
+    msg_id = message.message_id
+
+    # Random delay to desynchronize bots
+    await asyncio.sleep(random.uniform(0.5, 3.0))
+
+    # Check if another bot already claimed it
+    if msg_id in _claimed_messages.get(chat_id, set()):
+        return False
+
+    # Claim it by reacting
+    try:
+        await bot.set_message_reaction(
+            chat_id=chat_id,
+            message_id=msg_id,
+            reaction=[ReactionTypeEmoji(emoji=emoji)],
+        )
+        return True
+    except Exception as e:
+        logging.warning(f"Failed to claim message {msg_id}: {e}")
+        # If reaction fails (e.g. reactions disabled in chat), proceed anyway
+        return True
 
 
 async def ask_openai_contents(chat_id: int, contents, role="user", *, tool_choice: str | None = None) -> str:
@@ -498,6 +525,15 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
                 logging.error(f"Failed to send nudge image to chat {chat_id}: {e}")
 
 
+@dp.message_reaction()
+async def track_reactions(event: MessageReactionUpdated):
+    """Track reactions to detect messages claimed by other bots."""
+    chat_id = event.chat.id
+    msg_id = event.message_id
+    if event.new_reaction:
+        _claimed_messages.setdefault(chat_id, set()).add(msg_id)
+
+
 @dp.message(F.text)
 async def handle_message(message: Message):
     print(
@@ -521,6 +557,8 @@ async def handle_message(message: Message):
         )
         return
     if command == "/potd":
+        if not await try_claim_message(message):
+            return
         date_arg = message.text.strip().split(maxsplit=1)
         date = date_arg[1] if len(date_arg) > 1 else ""
         try:
@@ -541,6 +579,8 @@ async def handle_message(message: Message):
             await message.answer(f"Error: {e}")
         return
     if command == "/meme":
+        if not await try_claim_message(message):
+            return
         try:
             path = await retrieve_joke()
             photo = FSInputFile(path)
@@ -554,6 +594,8 @@ async def handle_message(message: Message):
             await message.answer(f"Error: {e}")
         return
     if command == "/fact":
+        if not await try_claim_message(message):
+            return
         try:
             fact = await retrieve_fact()
             await message.answer(fact)
@@ -562,6 +604,8 @@ async def handle_message(message: Message):
             await message.answer(f"Error: {e}")
         return
     if command == "/voice":
+        if not await try_claim_message(message):
+            return
         parts = message.text.strip().split(maxsplit=1)
         if len(parts) < 2:
             await message.answer("Usage: /voice <text>")
@@ -736,6 +780,8 @@ async def handle_message(message: Message):
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
+    if not await try_claim_message(message):
+        return
     print(f"Received photo from {message.from_user.username or message.from_user.id}")
     photo = message.photo[-1]  # Get the highest resolution photo
     photo_bytes = await bot.download(photo)

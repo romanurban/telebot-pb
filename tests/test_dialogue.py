@@ -27,8 +27,12 @@ class FakeChat:
 
 
 class FakeMessage:
+    _next_id = 1
+
     def __init__(self, text):
         self.text = text
+        self.message_id = FakeMessage._next_id
+        FakeMessage._next_id += 1
         self.from_user = FakeUser()
         self.chat = FakeChat()
         self.replies = []
@@ -177,6 +181,7 @@ async def test_voice_command(monkeypatch, tmp_path):
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
     msg = FakeMessage('/voice hello world')
+    monkeypatch.setattr(main, 'try_claim_message', AsyncMock(return_value=True))
     voice_path = tmp_path / 'v.ogg'
     voice_path.write_text('x')
     gen_mock = AsyncMock(return_value=str(voice_path))
@@ -201,6 +206,7 @@ async def test_voice_command_usage(monkeypatch):
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
     msg = FakeMessage('/voice')
+    monkeypatch.setattr(main, 'try_claim_message', AsyncMock(return_value=True))
     gen_mock = AsyncMock()
     monkeypatch.setattr(main, 'generate_voice_file', gen_mock)
 

@@ -41,8 +41,12 @@ class FakePhoto:
 
 
 class FakeMessage:
+    _next_id = 1
+
     def __init__(self, caption=None):
         self.caption = caption
+        self.message_id = FakeMessage._next_id
+        FakeMessage._next_id += 1
         self.photo = [FakePhoto()]
         self.from_user = FakeUser()
         self.chat = FakeChat()
@@ -64,6 +68,7 @@ async def test_handle_photo(monkeypatch):
     async def fake_download(photo):
         return await photo.download()
 
+    monkeypatch.setattr(main, 'try_claim_message', AsyncMock(return_value=True))
     monkeypatch.setattr(main.bot, 'download', fake_download)
     file_mock = AsyncMock(return_value=type('F', (), {'id': 'f1'}))
     ask_mock = AsyncMock(return_value='got it')
