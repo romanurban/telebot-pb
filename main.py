@@ -121,6 +121,7 @@ last_bot_reply_time = {}  # chat_id: datetime — bot replies only, used by prob
 bot_unmentioned_count = {}  # chat_id: int
 messages_since_bot_reply = {}  # chat_id: int — user messages since last bot reply
 _claimed_messages: dict[int, set[int]] = {}  # chat_id -> set of message_ids claimed via reaction
+_bot_user_id = int(TELEGRAM_TOKEN.split(":")[0]) if TELEGRAM_TOKEN and ":" in TELEGRAM_TOKEN else 0
 
 logging.basicConfig(level=logging.INFO)
 
@@ -182,11 +183,25 @@ async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
             message_id=msg_id,
             reaction=[ReactionTypeEmoji(emoji=emoji)],
         )
-        return True
     except Exception as e:
         logging.warning(f"Failed to claim message {msg_id}: {e}")
         # If reaction fails (e.g. reactions disabled in chat), proceed anyway
         return True
+
+    # Grace period: let competing reaction updates arrive from Telegram
+    await asyncio.sleep(1.5)
+
+    # Re-check: if another bot also reacted during the grace period, back off
+    if msg_id in _claimed_messages.get(chat_id, set()):
+        try:
+            await bot.set_message_reaction(
+                chat_id=chat_id, message_id=msg_id, reaction=[],
+            )
+        except Exception:
+            pass
+        return False
+
+    return True
 
 
 async def ask_openai_contents(chat_id: int, contents, role="user", *, tool_choice: str | None = None) -> str:
@@ -527,7 +542,10 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
 
 @dp.message_reaction()
 async def track_reactions(event: MessageReactionUpdated):
-    """Track reactions to detect messages claimed by other bots."""
+    """Track reactions from other bots to detect claimed messages."""
+    # Ignore our own reactions
+    if event.user and event.user.id == _bot_user_id:
+        return
     chat_id = event.chat.id
     msg_id = event.message_id
     if event.new_reaction:
