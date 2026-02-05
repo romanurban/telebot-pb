@@ -164,16 +164,32 @@ def is_active_hours():
     return ACTIVE_START <= now <= ACTIVE_END
 
 
+def _claim_key(message: Message) -> str:
+    """Build a claim key consistent across different bots.
+
+    Telegram gives different ``message_id`` values to different bots for
+    the same message, so we derive the key from fields that are identical
+    for all bots: chat id, sender id, timestamp, and a hash of the text.
+    """
+    import hashlib
+
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    date = int(message.date.timestamp())
+    text = message.text or message.caption or ""
+    content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+    return f"{chat_id}_{user_id}_{date}_{content_hash}"
+
+
 async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
     """Try to claim a message via an atomic file lock.
 
     Uses O_CREAT | O_EXCL to guarantee only one bot wins the claim.
     The reaction emoji is added as a visual indicator only.
     """
-    chat_id = message.chat.id
-    msg_id = message.message_id
-    claim_path = os.path.join(CLAIM_DIR, f"{chat_id}_{msg_id}")
-    logging.info(f"[claim] {BOT_USERNAME} trying to claim chat={chat_id} msg={msg_id} path={claim_path}")
+    key = _claim_key(message)
+    claim_path = os.path.join(CLAIM_DIR, key)
+    logging.info(f"[claim] {BOT_USERNAME} trying to claim key={key}")
 
     # Random delay to desynchronize bots
     await asyncio.sleep(random.uniform(0.5, 3.0))
@@ -184,16 +200,16 @@ async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
         os.write(fd, BOT_USERNAME.encode())
         os.close(fd)
     except FileExistsError:
-        logging.info(f"[claim] {BOT_USERNAME} LOST claim for msg={msg_id} (already claimed)")
+        logging.info(f"[claim] {BOT_USERNAME} LOST claim for key={key}")
         return False
 
-    logging.info(f"[claim] {BOT_USERNAME} WON claim for msg={msg_id}")
+    logging.info(f"[claim] {BOT_USERNAME} WON claim for key={key}")
 
     # Visual indicator only — not used for coordination
     try:
         await bot.set_message_reaction(
-            chat_id=chat_id,
-            message_id=msg_id,
+            chat_id=message.chat.id,
+            message_id=message.message_id,
             reaction=[ReactionTypeEmoji(emoji=emoji)],
         )
     except Exception:

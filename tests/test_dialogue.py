@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.join(__file__, '..'))
 
 import pytest
 from unittest.mock import AsyncMock
+from datetime import datetime
 
 import main
 import agent_client
@@ -32,8 +33,10 @@ class FakeMessage:
 
     def __init__(self, text):
         self.text = text
+        self.caption = None
         self.message_id = FakeMessage._next_id
         FakeMessage._next_id += 1
+        self.date = datetime.now()
         self.from_user = FakeUser()
         self.chat = FakeChat()
         self.replies = []

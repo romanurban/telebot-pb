@@ -32,8 +32,10 @@ class FakeMessage:
 
     def __init__(self, text):
         self.text = text
+        self.caption = None
         self.message_id = FakeMessage._next_id
         FakeMessage._next_id += 1
+        self.date = datetime.now()
         self.from_user = FakeUser()
         self.chat = FakeChat()
 
