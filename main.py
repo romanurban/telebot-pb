@@ -2,7 +2,7 @@ import os
 import re
 import logging
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message, MessageReactionUpdated, ReactionTypeEmoji
+from aiogram.types import Message, ReactionTypeEmoji
 from aiogram.enums import ParseMode
 from aiogram import F
 import asyncio
@@ -120,8 +120,8 @@ last_activity_time = {}  # chat_id: datetime — any message, used by nudge time
 last_bot_reply_time = {}  # chat_id: datetime — bot replies only, used by probabilistic logic
 bot_unmentioned_count = {}  # chat_id: int
 messages_since_bot_reply = {}  # chat_id: int — user messages since last bot reply
-_claimed_messages: dict[int, set[int]] = {}  # chat_id -> set of message_ids claimed via reaction
-_bot_user_id = int(TELEGRAM_TOKEN.split(":")[0]) if TELEGRAM_TOKEN and ":" in TELEGRAM_TOKEN else 0
+CLAIM_DIR = "/tmp/telebot_claims"
+os.makedirs(CLAIM_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -165,41 +165,35 @@ def is_active_hours():
 
 
 async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
-    """Try to claim a message via reaction. Returns True if claimed by us."""
+    """Try to claim a message via an atomic file lock.
+
+    Uses O_CREAT | O_EXCL to guarantee only one bot wins the claim.
+    The reaction emoji is added as a visual indicator only.
+    """
     chat_id = message.chat.id
     msg_id = message.message_id
+    claim_path = os.path.join(CLAIM_DIR, f"{chat_id}_{msg_id}")
 
     # Random delay to desynchronize bots
     await asyncio.sleep(random.uniform(0.5, 3.0))
 
-    # Check if another bot already claimed it
-    if msg_id in _claimed_messages.get(chat_id, set()):
+    # Atomic claim: O_CREAT | O_EXCL fails if file already exists
+    try:
+        fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, BOT_USERNAME.encode())
+        os.close(fd)
+    except FileExistsError:
         return False
 
-    # Claim it by reacting
+    # Visual indicator only — not used for coordination
     try:
         await bot.set_message_reaction(
             chat_id=chat_id,
             message_id=msg_id,
             reaction=[ReactionTypeEmoji(emoji=emoji)],
         )
-    except Exception as e:
-        logging.warning(f"Failed to claim message {msg_id}: {e}")
-        # If reaction fails (e.g. reactions disabled in chat), proceed anyway
-        return True
-
-    # Grace period: let competing reaction updates arrive from Telegram
-    await asyncio.sleep(1.5)
-
-    # Re-check: if another bot also reacted during the grace period, back off
-    if msg_id in _claimed_messages.get(chat_id, set()):
-        try:
-            await bot.set_message_reaction(
-                chat_id=chat_id, message_id=msg_id, reaction=[],
-            )
-        except Exception:
-            pass
-        return False
+    except Exception:
+        pass
 
     return True
 
@@ -538,18 +532,6 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
                     await target.send_photo(chat_id, image_file, caption=caption)
             except Exception as e:
                 logging.error(f"Failed to send nudge image to chat {chat_id}: {e}")
-
-
-@dp.message_reaction()
-async def track_reactions(event: MessageReactionUpdated):
-    """Track reactions from other bots to detect claimed messages."""
-    # Ignore our own reactions
-    if event.user and event.user.id == _bot_user_id:
-        return
-    chat_id = event.chat.id
-    msg_id = event.message_id
-    if event.new_reaction:
-        _claimed_messages.setdefault(chat_id, set()).add(msg_id)
 
 
 @dp.message(F.text)
@@ -1033,12 +1015,29 @@ def load_system_prompt() -> str:
 # History loading and scheduled summarization removed - now handled by agent_client
 
 
+def _cleanup_old_claims(max_age: int = 300):
+    """Remove claim files older than ``max_age`` seconds."""
+    import time as _time
+    now = _time.time()
+    try:
+        for name in os.listdir(CLAIM_DIR):
+            path = os.path.join(CLAIM_DIR, name)
+            try:
+                if os.path.getmtime(path) < (now - max_age):
+                    os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 async def periodic_history_save():
     """Periodically save chat histories to disk."""
     try:
         while True:
             await asyncio.sleep(300)  # Save every 5 minutes
             agent_client.save_histories_to_disk()
+            _cleanup_old_claims()
     except asyncio.CancelledError:
         logging.info("[history_save] Cancelled, saving before exit.")
         agent_client.save_histories_to_disk()
