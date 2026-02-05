@@ -27,8 +27,12 @@ class FakeChat:
 
 
 class FakeMessage:
+    _next_id = 1
+
     def __init__(self, text):
         self.text = text
+        self.message_id = FakeMessage._next_id
+        FakeMessage._next_id += 1
         self.from_user = FakeUser()
         self.chat = FakeChat()
 
@@ -92,6 +96,7 @@ async def test_manual_nudge_command_variants(monkeypatch):
 
     nudge_mock = AsyncMock()
     monkeypatch.setattr(main, 'nudge_inactive_chats', nudge_mock)
+    monkeypatch.setattr(main, 'try_claim_message', AsyncMock(return_value=True))
 
     msg1 = FakeMessage(f'/nudge@{main.BOT_USERNAME}')
     await main.handle_message(msg1)

@@ -552,6 +552,11 @@ async def handle_message(message: Message):
     # Manual nudge trigger by command (handles /nudge, /nudge@bot and arguments)
     command = message.text.strip().split()[0].split("@")[0].lower()
     if command == "/nudge":
+        # /nudge without @bot is addressed to all bots — claim it first
+        raw_command = message.text.strip().split()[0].lower()
+        if "@" not in raw_command:
+            if not await try_claim_message(message):
+                return
         await nudge_inactive_chats(
             force=True, force_chat_id=chat_id, force_message=message
         )
