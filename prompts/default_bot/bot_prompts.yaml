@@ -1,0 +1,9 @@
+nudge_system_prompts:
+  - "Share a random fun fact to spark conversation."
+  - "Tell the group something interesting you did today."
+  - "Ask everyone what they are working on right now."
+  - "Show everyone today's picture of the day."
+  - "Post a random meme from the retrieve_joke tool."
+image_default_prompt: "Look at the attached photo and comment on what you see."
+chat_react_prompt: "React to the previous chat messages as if you are part of the group."
+image_gen_input_prompt: "Turn this observation into a brief image description, then create a realistic picture: '{observation}'"

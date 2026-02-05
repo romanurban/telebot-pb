@@ -1,0 +1,47 @@
+name: Sync to Public Branch
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync to public branch
+        run: |
+          # Fetch all branches
+          git fetch origin public:public || git checkout -b public
+
+          # Checkout public branch
+          git checkout public
+
+          # Merge master into public (keep public version of conflicts)
+          git merge master -X theirs --no-edit || true
+
+          # Remove personal bot prompts (keep only default_bot)
+          rm -rf prompts/neuroyury_bot prompts/neuromans_bot prompts/neuromaksim_bot
+
+          # Stage deletions if any
+          git add -A
+
+          # Commit if there are changes
+          git diff --staged --quiet || git commit -m "chore: sync from master (exclude personal prompts)"
+
+          # Push to public
+          git push origin public

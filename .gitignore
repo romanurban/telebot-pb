@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment variables
+.env
+
+# Ignore everything in dataset except neuroyury_bot and its files
+dataset/*
+!dataset/neuroyury_bot/
+!dataset/neuroyury_bot/**
+
+**/.DS_Store
+
+/chat_history/*
+
+# PID files for non-tmux process tracking
+.pids/

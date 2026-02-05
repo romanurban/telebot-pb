@@ -1,0 +1,30 @@
+[project]
+name = "telebot"
+version = "0.1.0"
+description = "Configurable Telegram group bot powered by aiogram and OpenAI Agents SDK with MCP tool support"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiogram>=3.0.0",
+    "apscheduler>=3.11.0",
+    "openai>=1.0.0",
+    "openai-agents>=0.0.19",
+    "python-dotenv>=1.1.0",
+    "tqdm>=4.67.1",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.setuptools]
+py-modules = ["main", "agent_client"]
+packages = []
+
+[tool.uv.workspace]
+members = [
+    "telebot",
+]
