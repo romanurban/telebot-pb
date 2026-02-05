@@ -173,6 +173,7 @@ async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
     chat_id = message.chat.id
     msg_id = message.message_id
     claim_path = os.path.join(CLAIM_DIR, f"{chat_id}_{msg_id}")
+    logging.info(f"[claim] {BOT_USERNAME} trying to claim chat={chat_id} msg={msg_id} path={claim_path}")
 
     # Random delay to desynchronize bots
     await asyncio.sleep(random.uniform(0.5, 3.0))
@@ -183,7 +184,10 @@ async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
         os.write(fd, BOT_USERNAME.encode())
         os.close(fd)
     except FileExistsError:
+        logging.info(f"[claim] {BOT_USERNAME} LOST claim for msg={msg_id} (already claimed)")
         return False
+
+    logging.info(f"[claim] {BOT_USERNAME} WON claim for msg={msg_id}")
 
     # Visual indicator only — not used for coordination
     try:
@@ -536,6 +540,8 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
 
 @dp.message(F.text)
 async def handle_message(message: Message):
+    if message.from_user and message.from_user.is_bot:
+        return
     print(
         f"[Chat ID: {message.chat.id}] Received message from {message.from_user.username or message.from_user.id}: {message.text}"
     )
@@ -785,6 +791,8 @@ async def handle_message(message: Message):
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
+    if message.from_user and message.from_user.is_bot:
+        return
     if not await try_claim_message(message):
         return
     print(f"Received photo from {message.from_user.username or message.from_user.id}")

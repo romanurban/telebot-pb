@@ -19,6 +19,7 @@ class FakeUser:
     def __init__(self, username='tester', id=1):
         self.username = username
         self.id = id
+        self.is_bot = False
 
 
 class FakeChat:
