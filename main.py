@@ -731,6 +731,10 @@ async def handle_message(message: Message):
 
     # --- Probabilistic reply logic for non-mentions ---
 
+    # If the message is explicitly @-directed at another bot, don't chime in
+    if re.search(r"@\w+bot\b", message.text, re.IGNORECASE):
+        return
+
     # Track user messages since last bot reply
     non_bot_count = messages_since_bot_reply.get(chat_id, 0)
 
@@ -1095,6 +1099,7 @@ async def periodic_history_save():
 async def poll_bot_bus():
     """Poll the bot bus for messages from other bots."""
     mention_tag = f"@{BOT_USERNAME}".lower()
+    bare_username = BOT_USERNAME.lower()
     while True:
         try:
             # Discover chat files in the bus directory
@@ -1131,13 +1136,15 @@ async def poll_bot_bus():
                     if msg.get("via_bus"):
                         continue
 
-                    # Only trigger on @username or name patterns.
-                    # Bare username (without @) is not matched — bots naturally
-                    # write each other's usernames when talking ABOUT a bot,
-                    # which causes false triggers.
-                    mentioned = mention_tag in text.lower() or (
-                        NAME_MENTION_RE is not None
-                        and bool(NAME_MENTION_RE.search(text))
+                    # Check if this bot is mentioned (@username, bare username, or name patterns)
+                    text_lower = text.lower()
+                    mentioned = (
+                        mention_tag in text_lower
+                        or bare_username in text_lower
+                        or (
+                            NAME_MENTION_RE is not None
+                            and bool(NAME_MENTION_RE.search(text))
+                        )
                     )
 
                     if not mentioned:
