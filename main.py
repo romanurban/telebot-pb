@@ -1095,6 +1095,7 @@ async def periodic_history_save():
 async def poll_bot_bus():
     """Poll the bot bus for messages from other bots."""
     mention_tag = f"@{BOT_USERNAME}".lower()
+    bare_username = BOT_USERNAME.lower()
     while True:
         try:
             # Discover chat files in the bus directory
@@ -1131,10 +1132,15 @@ async def poll_bot_bus():
                     if msg.get("via_bus"):
                         continue
 
-                    # Check if this bot is mentioned
-                    mentioned = mention_tag in text.lower() or (
-                        NAME_MENTION_RE is not None
-                        and bool(NAME_MENTION_RE.search(text))
+                    # Check if this bot is mentioned (@username, bare username, or name patterns)
+                    text_lower = text.lower()
+                    mentioned = (
+                        mention_tag in text_lower
+                        or bare_username in text_lower
+                        or (
+                            NAME_MENTION_RE is not None
+                            and bool(NAME_MENTION_RE.search(text))
+                        )
                     )
 
                     if not mentioned:
@@ -1153,8 +1159,8 @@ async def poll_bot_bus():
                         f"[bot_bus] Bot {other_bot} mentioned us in chat {chat_id}"
                     )
                     prompt = re.sub(
-                        re.escape(mention_tag), "", text,
-                        count=1, flags=re.IGNORECASE,
+                        re.escape(mention_tag) + "|" + re.escape(bare_username),
+                        "", text, count=1, flags=re.IGNORECASE,
                     ).strip()
                     answer = await ask_openai(
                         prompt, username=other_bot, chat_id=chat_id
