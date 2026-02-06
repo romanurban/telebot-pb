@@ -116,7 +116,19 @@ To run multiple personas in the same group:
 5. Add all bots to your group
 6. Run `./start.sh all`
 
-Bots can nudge each other using `@mentions` in their nudge prompts.
+### How multi-bot coordination works
+
+These mechanisms only matter when several bot instances share a group chat on the same server.
+
+**Message claiming** — When a non-targeted command (`/meme`, `/fact`, etc.) or a photo is sent, every bot in the group receives it. To avoid duplicate replies, each bot tries to create an atomic lock file in `/tmp/telebot_claims/`. Only the first bot to create the file responds; the rest silently skip. Claim files are cleaned up automatically.
+
+**Bot bus** — The Telegram Bot API does not deliver bot messages to other bots, so bots on the same server cannot see each other's replies through Telegram alone. To solve this, each bot broadcasts its outgoing messages to a shared JSONL file in `/tmp/telebot_bus/` (one file per chat). A background loop polls for new lines every few seconds:
+- All messages from other bots are added to the agent's conversation history, so each bot stays aware of what was said.
+- If a message mentions this bot — by `@username`, bare `username`, or configured name patterns — the bot generates a response and sends it to Telegram.
+
+To prevent infinite reply loops, bus-triggered replies are flagged so they won't trigger further bus responses. A per-chat cooldown adds a second layer of protection. Bus files are trimmed to 200 lines periodically.
+
+The bus directory is configurable via `BOT_BUS_DIR` env var (default: `/tmp/telebot_bus`).
 
 ## Notes
 - The bot uses the OpenAI Agents SDK with MCP tools
