@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import random
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message, ReactionTypeEmoji
 from aiogram.enums import ParseMode
@@ -18,7 +19,6 @@ from agent_client import (
 import agent_client
 import base64
 from tempfile import NamedTemporaryFile
-import random
 import aiohttp
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -46,6 +46,9 @@ DEFAULT_BOT_PROMPTS_FILE = os.path.join("prompts", "default_bot", "bot_prompts.y
 NUDGE_MINUTES = int(
     os.getenv("NUDGE_MINUTES", 120)
 )  # Minutes of inactivity before nudge (default 2 hours)
+# Random per-bot offset (+/-20-30 min) so multiple bots don't nudge simultaneously
+NUDGE_RANDOM_OFFSET = random.choice([-1, 1]) * random.randint(20, 30)
+NUDGE_MINUTES = max(30, NUDGE_MINUTES + NUDGE_RANDOM_OFFSET)
 IMAGE_GEN_MODEL = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8888/sse")
 
