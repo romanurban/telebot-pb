@@ -1159,8 +1159,8 @@ async def poll_bot_bus():
                         f"[bot_bus] Bot {other_bot} mentioned us in chat {chat_id}"
                     )
                     prompt = re.sub(
-                        re.escape(mention_tag) + "|" + re.escape(bare_username),
-                        "", text, count=1, flags=re.IGNORECASE,
+                        re.escape(mention_tag), "", text,
+                        count=1, flags=re.IGNORECASE,
                     ).strip()
                     answer = await ask_openai(
                         prompt, username=other_bot, chat_id=chat_id
