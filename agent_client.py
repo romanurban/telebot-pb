@@ -164,6 +164,13 @@ def save_histories_to_disk() -> None:
     print(f"[save_histories] Saved {len(_histories)} chats")
 
 
+def inject_external_message(chat_id: int, username: str, text: str) -> None:
+    """Add another bot's message into chat history as a user message."""
+    history = _histories.get(chat_id, [])
+    history.append({"role": "user", "content": f"{username}: {text}"})
+    _histories[chat_id] = history[-MAX_HISTORY:]
+
+
 def load_histories_from_disk() -> None:
     global _histories
     if not os.path.exists(HISTORY_DIR):

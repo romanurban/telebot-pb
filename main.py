@@ -15,8 +15,10 @@ from agent_client import (
     openai_client,
     create_thread_with_system_prompt,
     ask_agent,
+    inject_external_message,
 )
 import agent_client
+import bot_bus
 import base64
 from tempfile import NamedTemporaryFile
 import aiohttp
@@ -125,6 +127,10 @@ bot_unmentioned_count = {}  # chat_id: int
 messages_since_bot_reply = {}  # chat_id: int — user messages since last bot reply
 CLAIM_DIR = "/tmp/telebot_claims"
 os.makedirs(CLAIM_DIR, exist_ok=True)
+
+# Bot bus: track file read positions per chat
+_bus_positions: dict[int, int] = {}
+BOT_BUS_POLL_INTERVAL = 3  # seconds between bus polls
 
 logging.basicConfig(level=logging.INFO)
 
@@ -714,6 +720,9 @@ async def handle_message(message: Message):
         else:
             mark_bot_replied(chat_id)
             await message.answer(answer, parse_mode=ParseMode.HTML)
+        # Broadcast reply to bot bus so other bots can see it
+        if answer:
+            bot_bus.broadcast(chat_id, BOT_USERNAME, answer)
         # Reset unmentioned counter since bot was mentioned
         bot_unmentioned_count[chat_id] = 0
         return
@@ -806,6 +815,9 @@ async def handle_message(message: Message):
     else:
         mark_bot_replied(chat_id)
         await message.answer(answer, parse_mode=ParseMode.HTML)
+    # Broadcast probabilistic reply to bot bus
+    if answer:
+        bot_bus.broadcast(chat_id, BOT_USERNAME, answer)
 
 
 @dp.message(F.photo)
@@ -934,6 +946,8 @@ async def nudge_inactive_chats(
         await send_nudge_with_image(
             force_message, force_chat_id, answer, is_message=True
         )
+        if answer:
+            bot_bus.broadcast(force_chat_id, BOT_USERNAME, answer)
         return
     last_reset = datetime.now()
     logging.info(f"[nudge] Starting nudge loop. NUDGE_ENABLED_CHATS={NUDGE_ENABLED_CHATS}, NUDGE_MINUTES={NUDGE_MINUTES}, Active hours: {ACTIVE_START}-{ACTIVE_END} {BOT_TIMEZONE}")
@@ -974,6 +988,8 @@ async def nudge_inactive_chats(
                         await send_nudge_with_image(
                             bot, chat_id, answer, caption="", is_message=False
                         )
+                        if answer:
+                            bot_bus.broadcast(chat_id, BOT_USERNAME, answer)
                         logging.info(f"[nudge] Nudge sent to chat {chat_id}")
                     except Exception as e:
                         logging.error(f"[nudge] Error sending nudge to chat {chat_id}: {e}", exc_info=True)
@@ -1065,10 +1081,84 @@ async def periodic_history_save():
             await asyncio.sleep(300)  # Save every 5 minutes
             agent_client.save_histories_to_disk()
             _cleanup_old_claims()
+            # Trim bot bus files
+            for chat_id in list(_bus_positions.keys()):
+                bot_bus.trim(chat_id)
     except asyncio.CancelledError:
         logging.info("[history_save] Cancelled, saving before exit.")
         agent_client.save_histories_to_disk()
         raise
+
+
+async def poll_bot_bus():
+    """Poll the bot bus for messages from other bots."""
+    mention_tag = f"@{BOT_USERNAME}".lower()
+    while True:
+        try:
+            # Discover chat files in the bus directory
+            try:
+                files = os.listdir(bot_bus.BOT_BUS_DIR)
+            except FileNotFoundError:
+                await asyncio.sleep(BOT_BUS_POLL_INTERVAL)
+                continue
+
+            for fname in files:
+                if not fname.endswith(".jsonl"):
+                    continue
+                try:
+                    chat_id = int(fname[:-6])  # strip .jsonl
+                except ValueError:
+                    continue
+
+                last_pos = _bus_positions.get(chat_id, 0)
+                messages, new_pos = bot_bus.poll(chat_id, BOT_USERNAME, last_pos)
+                _bus_positions[chat_id] = new_pos
+
+                for msg in messages:
+                    other_bot = msg.get("bot", "")
+                    text = msg.get("text", "")
+                    if not text:
+                        continue
+
+                    # Check if this bot is mentioned
+                    mentioned = mention_tag in text.lower() or (
+                        NAME_MENTION_RE is not None
+                        and bool(NAME_MENTION_RE.search(text))
+                    )
+
+                    # Always inject into history so the bot knows what was said
+                    inject_external_message(chat_id, other_bot, text)
+
+                    if mentioned:
+                        logging.info(
+                            f"[bot_bus] Bot {other_bot} mentioned us in chat {chat_id}"
+                        )
+                        prompt = re.sub(
+                            re.escape(mention_tag), "", text,
+                            count=1, flags=re.IGNORECASE,
+                        ).strip()
+                        answer = await ask_openai(
+                            prompt, username=other_bot, chat_id=chat_id
+                        )
+                        if answer:
+                            try:
+                                await bot.send_message(
+                                    chat_id, answer, parse_mode=ParseMode.HTML
+                                )
+                            except Exception as e:
+                                logging.error(
+                                    f"[bot_bus] Failed to send reply to {chat_id}: {e}"
+                                )
+                            mark_bot_replied(chat_id)
+                            bot_bus.broadcast(chat_id, BOT_USERNAME, answer)
+
+            await asyncio.sleep(BOT_BUS_POLL_INTERVAL)
+        except asyncio.CancelledError:
+            logging.info("[bot_bus] Poll loop cancelled.")
+            raise
+        except Exception as e:
+            logging.error(f"[bot_bus] Error in poll loop: {e}", exc_info=True)
+            await asyncio.sleep(BOT_BUS_POLL_INTERVAL)
 
 
 async def startup() -> None:
@@ -1082,9 +1172,13 @@ async def startup() -> None:
     if system_prompt:
         await create_thread_with_system_prompt(system_prompt, BOT_USERNAME)
 
+    # Initialize bot bus for inter-bot communication
+    bot_bus.init_bus()
+
     # Start background tasks
     asyncio.create_task(nudge_inactive_chats())
     asyncio.create_task(periodic_history_save())
+    asyncio.create_task(poll_bot_bus())
 
     await dp.start_polling(bot)
 
