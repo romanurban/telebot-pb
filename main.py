@@ -130,7 +130,9 @@ os.makedirs(CLAIM_DIR, exist_ok=True)
 
 # Bot bus: track file read positions per chat
 _bus_positions: dict[int, int] = {}
+_bus_last_reply: dict[int, float] = {}  # chat_id -> timestamp of last bus-triggered reply
 BOT_BUS_POLL_INTERVAL = 3  # seconds between bus polls
+BOT_BUS_REPLY_COOLDOWN = 60  # min seconds between bus-triggered replies per chat
 
 logging.basicConfig(level=logging.INFO)
 
@@ -1114,10 +1116,19 @@ async def poll_bot_bus():
                 messages, new_pos = bot_bus.poll(chat_id, BOT_USERNAME, last_pos)
                 _bus_positions[chat_id] = new_pos
 
+                import time as _time
+
                 for msg in messages:
                     other_bot = msg.get("bot", "")
                     text = msg.get("text", "")
                     if not text:
+                        continue
+
+                    # Always inject into history so the bot knows what was said
+                    inject_external_message(chat_id, other_bot, text)
+
+                    # Don't respond to messages that were themselves bus-triggered
+                    if msg.get("via_bus"):
                         continue
 
                     # Check if this bot is mentioned
@@ -1126,31 +1137,43 @@ async def poll_bot_bus():
                         and bool(NAME_MENTION_RE.search(text))
                     )
 
-                    # Always inject into history so the bot knows what was said
-                    inject_external_message(chat_id, other_bot, text)
+                    if not mentioned:
+                        continue
 
-                    if mentioned:
+                    # Per-chat cooldown to prevent rapid back-and-forth
+                    now_ts = _time.time()
+                    last_reply_ts = _bus_last_reply.get(chat_id, 0)
+                    if now_ts - last_reply_ts < BOT_BUS_REPLY_COOLDOWN:
                         logging.info(
-                            f"[bot_bus] Bot {other_bot} mentioned us in chat {chat_id}"
+                            f"[bot_bus] Skipping reply in chat {chat_id} — cooldown"
                         )
-                        prompt = re.sub(
-                            re.escape(mention_tag), "", text,
-                            count=1, flags=re.IGNORECASE,
-                        ).strip()
-                        answer = await ask_openai(
-                            prompt, username=other_bot, chat_id=chat_id
+                        continue
+
+                    logging.info(
+                        f"[bot_bus] Bot {other_bot} mentioned us in chat {chat_id}"
+                    )
+                    prompt = re.sub(
+                        re.escape(mention_tag), "", text,
+                        count=1, flags=re.IGNORECASE,
+                    ).strip()
+                    answer = await ask_openai(
+                        prompt, username=other_bot, chat_id=chat_id
+                    )
+                    if answer:
+                        try:
+                            await bot.send_message(
+                                chat_id, answer, parse_mode=ParseMode.HTML
+                            )
+                        except Exception as e:
+                            logging.error(
+                                f"[bot_bus] Failed to send reply to {chat_id}: {e}"
+                            )
+                        mark_bot_replied(chat_id)
+                        _bus_last_reply[chat_id] = _time.time()
+                        # Mark as via_bus so other bots won't chain off this
+                        bot_bus.broadcast(
+                            chat_id, BOT_USERNAME, answer, via_bus=True
                         )
-                        if answer:
-                            try:
-                                await bot.send_message(
-                                    chat_id, answer, parse_mode=ParseMode.HTML
-                                )
-                            except Exception as e:
-                                logging.error(
-                                    f"[bot_bus] Failed to send reply to {chat_id}: {e}"
-                                )
-                            mark_bot_replied(chat_id)
-                            bot_bus.broadcast(chat_id, BOT_USERNAME, answer)
 
             await asyncio.sleep(BOT_BUS_POLL_INTERVAL)
         except asyncio.CancelledError:
