@@ -19,6 +19,9 @@ dataset/*
 
 **/.DS_Store
 
+# Test / coverage artifacts
+.coverage
+
 /chat_history/*
 
 # PID files for non-tmux process tracking

@@ -156,3 +156,88 @@ def test_get_nudge_prompt_time_based(monkeypatch):
 
     monkeypatch.setattr(main, "datetime", Afternoon)
     assert main.get_nudge_prompt(1) == "RANDOM"
+
+
+@pytest.mark.asyncio
+async def test_nudge_blocked_during_startup_grace(monkeypatch):
+    """Nudge should not fire when nudge_loop_started_at is too recent."""
+    agent_client._histories.clear()
+    main.last_activity_time.clear()
+    main.last_bot_reply_time.clear()
+    main.bot_unmentioned_count.clear()
+
+    monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
+    chat_id = 100
+    now = main.datetime.now()
+    # Activity was long ago but startup was just now
+    main.last_activity_time[chat_id] = now - main.timedelta(minutes=main.NUDGE_MINUTES + 10)
+    main.nudge_loop_started_at = now  # just started
+
+    ask_mock = AsyncMock(return_value='nudge-msg')
+    send_mock = AsyncMock()
+    monkeypatch.setattr(main, 'ask_agent', ask_mock)
+    monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
+    monkeypatch.setattr(main, 'is_active_hours', lambda: True)
+
+    call_count = 0
+
+    async def fake_sleep(seconds):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            raise StopIteration
+
+    monkeypatch.setattr(main.asyncio, 'sleep', fake_sleep)
+
+    with pytest.raises(RuntimeError):
+        await main.nudge_inactive_chats()
+
+    # Agent should NOT have been called — startup guard blocks it
+    ask_mock.assert_not_awaited()
+    send_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_nudge_allowed_after_startup_grace(monkeypatch):
+    """Nudge should fire once startup grace period has elapsed."""
+    agent_client._histories.clear()
+    main.last_activity_time.clear()
+    main.last_bot_reply_time.clear()
+    main.bot_unmentioned_count.clear()
+
+    monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
+    chat_id = 100
+    past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
+    main.last_activity_time[chat_id] = past
+    main.nudge_loop_started_at = past  # started long ago
+
+    ask_mock = AsyncMock(return_value='nudge-msg')
+    send_mock = AsyncMock()
+    monkeypatch.setattr(main, 'ask_agent', ask_mock)
+    monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
+    monkeypatch.setattr(main, 'is_active_hours', lambda: True)
+
+    async def fake_sleep(seconds):
+        raise StopIteration
+
+    monkeypatch.setattr(main.asyncio, 'sleep', fake_sleep)
+
+    with pytest.raises(RuntimeError):
+        await main.nudge_inactive_chats()
+
+    ask_mock.assert_awaited_once()
+    send_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_nudge_enabled_chats_always_in_all_chats(monkeypatch):
+    """NUDGE_ENABLED_CHATS should be part of all_chats even with no history."""
+    agent_client._histories.clear()
+    main.last_activity_time.clear()
+
+    monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {200, 300})
+
+    # Verify the set union includes NUDGE_ENABLED_CHATS
+    all_chats = set(agent_client._histories.keys()) | set(main.last_activity_time.keys()) | main.NUDGE_ENABLED_CHATS
+    assert 200 in all_chats
+    assert 300 in all_chats

@@ -1,3 +1,6 @@
+import json
+import os
+
 import pytest
 from unittest.mock import AsyncMock, Mock
 
@@ -118,3 +121,88 @@ async def test_history_normalization(monkeypatch):
     user_msg = api_input[1]
     assert isinstance(user_msg["content"], list)
     assert user_msg["content"][0]["type"] == "input_text"
+
+
+def test_save_and_load_histories_roundtrip(monkeypatch, tmp_path):
+    history_dir = str(tmp_path / "history")
+    monkeypatch.setattr(agent_client, "HISTORY_DIR", history_dir)
+    agent_client._histories.clear()
+
+    agent_client._histories[100] = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    agent_client._histories[200] = [
+        {"role": "user", "content": "test"},
+    ]
+
+    agent_client.save_histories_to_disk()
+
+    # Clear and reload
+    agent_client._histories.clear()
+    agent_client.load_histories_from_disk()
+
+    assert 100 in agent_client._histories
+    assert 200 in agent_client._histories
+    assert len(agent_client._histories[100]) == 2
+    assert agent_client._histories[100][0]["content"] == "hi"
+    assert agent_client._histories[200][0]["content"] == "test"
+
+
+def test_load_histories_filters_invalid_roles(monkeypatch, tmp_path):
+    history_dir = str(tmp_path / "history")
+    os.makedirs(history_dir)
+    monkeypatch.setattr(agent_client, "HISTORY_DIR", history_dir)
+    agent_client._histories.clear()
+
+    # Write a file with a mix of valid and invalid role entries
+    data = [
+        {"role": "user", "content": "good"},
+        {"role": "system", "content": "should be filtered"},
+        {"role": "assistant", "content": "also good"},
+    ]
+    with open(os.path.join(history_dir, "300.json"), "w") as f:
+        json.dump(data, f)
+
+    agent_client.load_histories_from_disk()
+    assert len(agent_client._histories[300]) == 2
+    roles = [m["role"] for m in agent_client._histories[300]]
+    assert "system" not in roles
+
+
+def test_inject_external_message():
+    agent_client._histories.clear()
+    agent_client.inject_external_message(100, "other_bot", "hey there")
+
+    assert 100 in agent_client._histories
+    assert len(agent_client._histories[100]) == 1
+    msg = agent_client._histories[100][0]
+    assert msg["role"] == "user"
+    assert "other_bot: hey there" == msg["content"]
+
+
+def test_inject_external_message_respects_max_history(monkeypatch):
+    monkeypatch.setattr(agent_client, "MAX_HISTORY", 3)
+    agent_client._histories.clear()
+
+    for i in range(5):
+        agent_client.inject_external_message(100, "bot", f"msg{i}")
+
+    assert len(agent_client._histories[100]) == 3
+    # Should keep the last 3
+    assert agent_client._histories[100][0]["content"] == "bot: msg2"
+    assert agent_client._histories[100][2]["content"] == "bot: msg4"
+
+
+def test_clear_history():
+    agent_client._histories.clear()
+    agent_client._histories[100] = [{"role": "user", "content": "hi"}]
+    agent_client.clear_history(100)
+    assert 100 not in agent_client._histories
+
+
+def test_clear_history_nonexistent():
+    agent_client._histories.clear()
+    # Should not raise
+    agent_client.clear_history(999)
+    assert 999 not in agent_client._histories
