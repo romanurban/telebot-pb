@@ -970,7 +970,7 @@ async def nudge_inactive_chats(
             if (now - last_reset).total_seconds() >= NUDGE_RESET_INTERVAL:
                 bot_unmentioned_count.clear()
                 last_reset = now
-            all_chats = set(agent_client._histories.keys()) | set(last_activity_time.keys())
+            all_chats = set(agent_client._histories.keys()) | set(last_activity_time.keys()) | NUDGE_ENABLED_CHATS
             logging.debug(f"[nudge] Checking {len(all_chats)} chats: {all_chats}")
             for chat_id in all_chats:
                 if chat_id not in NUDGE_ENABLED_CHATS:
@@ -978,7 +978,9 @@ async def nudge_inactive_chats(
                     continue
                 last_time = last_activity_time.get(chat_id)
                 if last_time is None:
-                    # No activity recorded (e.g. just restarted) — skip, don't nudge
+                    # No activity recorded (e.g. just restarted) — seed
+                    # with current time so the nudge timer starts counting
+                    last_activity_time[chat_id] = now
                     continue
                 else:
                     minutes_passed = (now - last_time).total_seconds() / 60
