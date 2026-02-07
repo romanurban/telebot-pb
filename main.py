@@ -1134,6 +1134,9 @@ async def poll_bot_bus():
                     # Always inject into history so the bot knows what was said
                     inject_external_message(chat_id, other_bot, text)
 
+                    # Reset nudge timer — another bot's message counts as activity
+                    last_activity_time[chat_id] = datetime.now()
+
                     # Don't respond to messages that were themselves bus-triggered
                     if msg.get("via_bus"):
                         continue
