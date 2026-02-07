@@ -5,5 +5,5 @@ nudge_system_prompts:
   - "Show everyone today's picture of the day."
   - "Post a random meme from the retrieve_joke tool."
 image_default_prompt: "Look at the attached photo and comment on what you see."
-chat_react_prompt: "React to the previous chat messages as if you are part of the group."
+chat_react_prompt: "React to the previous chat messages as if you are part of the group. Don't echo what others already said — if the topic has been covered, switch it: bring up something related to this topic in unexpected way, or steer the conversation somewhere new."
 image_gen_input_prompt: "Turn this observation into a brief image description, then create a realistic picture: '{observation}'"

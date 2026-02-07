@@ -580,8 +580,15 @@ async def handle_message(message: Message):
     username = message.from_user.username or str(message.from_user.id)
 
     # Any user message resets the nudge inactivity timer
+    INACTIVITY_CLEAR_MINUTES = 30
+    last_time = last_activity_time.get(chat_id)
     last_activity_time[chat_id] = datetime.now()
     messages_since_bot_reply[chat_id] = messages_since_bot_reply.get(chat_id, 0) + 1
+
+    # Clear stale history after a long silence so the bot starts fresh
+    if last_time and (datetime.now() - last_time).total_seconds() / 60 >= INACTIVITY_CLEAR_MINUTES:
+        agent_client.clear_history(chat_id)
+        logging.info(f"[handle] Cleared stale history for chat {chat_id} after inactivity")
 
     # Manual nudge trigger by command (handles /nudge, /nudge@bot and arguments)
     command = message.text.strip().split()[0].split("@")[0].lower()
@@ -997,6 +1004,7 @@ async def nudge_inactive_chats(
                 if minutes_passed >= NUDGE_MINUTES:
                     try:
                         logging.info(f"[nudge] Sending automatic nudge to chat {chat_id}")
+                        agent_client.clear_history(chat_id)
                         system_prompt = get_nudge_prompt(chat_id)
                         message_list = [{"role": "system", "content": system_prompt}]
                         raw_answer = await ask_agent(message_list, chat_id=chat_id)
