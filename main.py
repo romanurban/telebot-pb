@@ -122,6 +122,7 @@ RECENT_ACTIVITY_SECONDS = 30  # Window to treat bot replies as "recent"
 # === GLOBAL STATE ===
 # Note: chat histories now managed in agent_client._histories
 last_activity_time = {}  # chat_id: datetime — any message, used by nudge timer
+nudge_loop_started_at = None  # set when nudge loop starts; prevents nudging right after restart
 last_bot_reply_time = {}  # chat_id: datetime — bot replies only, used by probabilistic logic
 bot_unmentioned_count = {}  # chat_id: int
 messages_since_bot_reply = {}  # chat_id: int — user messages since last bot reply
@@ -955,7 +956,10 @@ async def nudge_inactive_chats(
         if answer:
             bot_bus.broadcast(force_chat_id, BOT_USERNAME, answer)
         return
+    global nudge_loop_started_at
     last_reset = datetime.now()
+    if nudge_loop_started_at is None:
+        nudge_loop_started_at = datetime.now()
     logging.info(f"[nudge] Starting nudge loop. NUDGE_ENABLED_CHATS={NUDGE_ENABLED_CHATS}, NUDGE_MINUTES={NUDGE_MINUTES}, Active hours: {ACTIVE_START}-{ACTIVE_END} {BOT_TIMEZONE}")
     while True:
         try:
@@ -985,6 +989,11 @@ async def nudge_inactive_chats(
                 else:
                     minutes_passed = (now - last_time).total_seconds() / 60
                 logging.info(f"[nudge] Chat {chat_id}: {minutes_passed:.1f} minutes since last message (threshold: {NUDGE_MINUTES})")
+                # Don't nudge until NUDGE_MINUTES has passed since startup
+                minutes_since_start = (now - nudge_loop_started_at).total_seconds() / 60
+                if minutes_since_start < NUDGE_MINUTES:
+                    logging.debug(f"[nudge] Chat {chat_id}: skipping — only {minutes_since_start:.1f} min since startup")
+                    continue
                 if minutes_passed >= NUDGE_MINUTES:
                     try:
                         logging.info(f"[nudge] Sending automatic nudge to chat {chat_id}")

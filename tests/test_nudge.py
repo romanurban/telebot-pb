@@ -52,7 +52,9 @@ async def test_nudge_inactive_chat(monkeypatch):
 
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     chat_id = 100
-    main.last_activity_time[chat_id] = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
+    past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
+    main.last_activity_time[chat_id] = past
+    main.nudge_loop_started_at = past
 
     ask_mock = AsyncMock(return_value='nudge-msg')
     send_mock = AsyncMock()
