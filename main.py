@@ -1002,6 +1002,23 @@ async def nudge_inactive_chats(
                     logging.debug(f"[nudge] Chat {chat_id}: skipping — only {minutes_since_start:.1f} min since startup")
                     continue
                 if minutes_passed >= NUDGE_MINUTES:
+                    # Check bus for recent activity from any bot
+                    import time as _time
+                    last_bus_ts = bot_bus.last_message_time(chat_id)
+                    if last_bus_ts is not None:
+                        bus_age_min = (_time.time() - last_bus_ts) / 60
+                        if bus_age_min < NUDGE_MINUTES:
+                            logging.info(f"[nudge] Skipping chat {chat_id} — bus activity {bus_age_min:.0f} min ago")
+                            continue
+                    # Random delay so the fastest bot broadcasts before others check
+                    await asyncio.sleep(random.uniform(5, 60))
+                    # Re-check bus after delay — another bot may have nudged
+                    last_bus_ts = bot_bus.last_message_time(chat_id)
+                    if last_bus_ts is not None:
+                        bus_age_min = (_time.time() - last_bus_ts) / 60
+                        if bus_age_min < NUDGE_MINUTES:
+                            logging.info(f"[nudge] Skipping chat {chat_id} — bus activity {bus_age_min:.0f} min ago (after delay)")
+                            continue
                     try:
                         logging.info(f"[nudge] Sending automatic nudge to chat {chat_id}")
                         agent_client.clear_history(chat_id)

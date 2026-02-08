@@ -71,6 +71,30 @@ def poll(
     return messages, new_pos
 
 
+def last_message_time(chat_id: int) -> float | None:
+    """Return the epoch timestamp of the most recent bus message for ``chat_id``."""
+    path = _bus_path(chat_id)
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            end = f.tell()
+            if end == 0:
+                return None
+            f.seek(max(0, end - 4096))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(tail.strip().splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line).get("ts")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+    return None
+
+
 def trim(chat_id: int, max_lines: int = 200) -> None:
     """Keep only the last ``max_lines`` lines in the bus file."""
     path = _bus_path(chat_id)
