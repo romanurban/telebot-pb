@@ -14,10 +14,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "<YOUR_OPENAI_API_KEY>")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.1")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8888/sse")
 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+USE_OPENROUTER = bool(OPENROUTER_API_KEY)
+
 HISTORY_DIR = "chat_history"
 MAX_HISTORY = 20  # Keep last N messages (user + assistant) per chat
 
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+if USE_OPENROUTER:
+    openai_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+else:
+    openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 set_default_openai_client(openai_client)
 
 
@@ -87,7 +96,7 @@ async def create_thread_with_system_prompt(
         instructions=system_prompt,
         tools=[],
         mcp_servers=[_mcp_server],
-        model=OPENAI_MODEL,
+        model=OPENROUTER_MODEL if USE_OPENROUTER else OPENAI_MODEL,
     )
     _system_history = [{"role": "system", "content": system_prompt}]
 

@@ -16,6 +16,7 @@ from agent_client import (
     create_thread_with_system_prompt,
     ask_agent,
     inject_external_message,
+    USE_OPENROUTER,
 )
 import agent_client
 import bot_bus
@@ -33,7 +34,7 @@ from mcp.client.session import ClientSession
 from openai import AsyncOpenAI
 
 # Standard OpenAI client for image generation (not the Agents SDK wrapper)
-_openai_images_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+_openai_images_client = None if USE_OPENROUTER else AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 
 # === CONSTANTS & ENVIRONMENT VARIABLES ===
 
@@ -145,8 +146,12 @@ def validate_environment():
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN.startswith("<"):
         missing.append("TELEGRAM_TOKEN")
 
-    if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("<"):
-        missing.append("OPENAI_API_KEY")
+    if USE_OPENROUTER:
+        if not os.getenv("OPENROUTER_MODEL"):
+            missing.append("OPENROUTER_MODEL")
+    else:
+        if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("<"):
+            missing.append("OPENAI_API_KEY")
 
     if not BOT_USERNAME:
         missing.append("BOT_USERNAME")
@@ -268,6 +273,8 @@ async def ask_openai_image(
     chat_id: int,
 ) -> str:
     """Upload an image and include it with the prompt for the assistant."""
+    if USE_OPENROUTER:
+        return "I can't analyze images with my current setup."
     try:
         image_file = io.BytesIO(image_bytes)
         image_file.name = "image.jpg"
@@ -931,6 +938,8 @@ async def style_caption(caption: str, *, chat_id: int) -> str:
 
 async def generate_image_from_observation(observation: str) -> bytes:
     """Enhance observation and generate an image using OpenAI Images API."""
+    if _openai_images_client is None:
+        return None
     try:
         response = await _openai_images_client.images.generate(
             model=IMAGE_GEN_MODEL,
