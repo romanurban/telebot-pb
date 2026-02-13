@@ -323,11 +323,17 @@ async def analyze_image(image_path: str, prompt: str = "Describe this image") ->
     ``prompt`` describes what to look for in the image.
     """
     import base64
+    import logging
+
+    logging.info(f"[analyze_image] Called with image_path={image_path}, prompt={prompt!r}")
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     model = os.getenv("OPENROUTER_VISION_MODEL", "qwen/qwen3-vl-235b-a22b-thinking:free")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    file_size = os.path.getsize(image_path)
+    logging.info(f"[analyze_image] Reading file {image_path} ({file_size} bytes), model={model}")
 
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
@@ -347,13 +353,20 @@ async def analyze_image(image_path: str, prompt: str = "Describe this image") ->
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    logging.info(f"[analyze_image] Sending request to OpenRouter ({model})...")
     async with aiohttp.ClientSession() as session:
         async with session.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers, json=payload,
         ) as resp:
             data = await resp.json()
-    return data["choices"][0]["message"]["content"]
+    logging.info(f"[analyze_image] Response status keys: {list(data.keys())}")
+    if "error" in data:
+        logging.error(f"[analyze_image] API error: {data['error']}")
+        raise RuntimeError(f"OpenRouter vision error: {data['error']}")
+    content = data["choices"][0]["message"]["content"]
+    logging.info(f"[analyze_image] Got description ({len(content)} chars): {content[:200]!r}...")
+    return content
 
 
 if __name__ == "__main__":
