@@ -315,5 +315,46 @@ async def generate_voice(text: str) -> str:
         f.write(data)
         return f.name
 
+@mcp.tool()
+async def analyze_image(image_path: str, prompt: str = "Describe this image") -> str:
+    """Analyze an image using a vision model and return a text description.
+
+    ``image_path`` is the local file path to the image (e.g. /tmp/photo.jpg).
+    ``prompt`` describes what to look for in the image.
+    """
+    import base64
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    model = os.getenv("OPENROUTER_VISION_MODEL", "qwen/qwen3-vl-235b-a22b-thinking:free")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    with open(image_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    data_url = f"data:image/jpeg;base64,{b64}"
+
+    payload = {
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }],
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers, json=payload,
+        ) as resp:
+            data = await resp.json()
+    return data["choices"][0]["message"]["content"]
+
+
 if __name__ == "__main__":
     mcp.run(transport="sse")

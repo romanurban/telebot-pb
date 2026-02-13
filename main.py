@@ -274,7 +274,25 @@ async def ask_openai_image(
 ) -> str:
     """Upload an image and include it with the prompt for the assistant."""
     if USE_OPENROUTER:
-        return "I can't analyze images with my current setup."
+        tmp_file = None
+        try:
+            with NamedTemporaryFile(delete=False, dir="/tmp", suffix=".jpg") as f:
+                f.write(image_bytes)
+                tmp_file = f.name
+            agent_prompt = (
+                f"User sent a photo saved at {tmp_file}. "
+                f"Use the analyze_image tool to see what's in it. "
+                f"Prompt: {prompt}"
+            )
+            return await ask_openai_contents(chat_id, agent_prompt)
+        except Exception as e:
+            return f"LLM error: {e}"
+        finally:
+            if tmp_file:
+                try:
+                    os.remove(tmp_file)
+                except OSError:
+                    pass
     try:
         image_file = io.BytesIO(image_bytes)
         image_file.name = "image.jpg"
