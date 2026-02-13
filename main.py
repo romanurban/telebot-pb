@@ -245,7 +245,7 @@ async def ask_openai_contents(chat_id: int, contents, role="user", *, tool_choic
         reply = await ask_agent(message_list, chat_id=chat_id, tool_choice=tool_choice)
         return clean_openai_reply(reply)
     except Exception as e:
-        return f"OpenAI error: {e}"
+        return f"LLM error: {e}"
 
 
 async def ask_openai(
@@ -289,7 +289,7 @@ async def ask_openai_image(
         ]
         return await ask_openai_contents(chat_id, contents)
     except Exception as e:
-        return f"OpenAI error: {e}"
+        return f"LLM error: {e}"
 
 
 async def download_image_to_tmp(url: str) -> str:
@@ -801,7 +801,7 @@ async def handle_message(message: Message):
         raw_answer = await ask_agent(message_list, chat_id=chat_id, tool_choice=tool_choice)
         answer = clean_openai_reply(raw_answer)
     except Exception as e:
-        answer = f"OpenAI error: {e}"
+        answer = f"LLM error: {e}"
     voice = await _extract_voice_file(answer)
     if voice:
         path, text = voice
