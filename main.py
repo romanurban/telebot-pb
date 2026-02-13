@@ -1256,6 +1256,20 @@ async def startup() -> None:
     # Initialize bot bus for inter-bot communication
     bot_bus.init_bus()
 
+    # Seek bus positions to end of existing files so we don't replay old messages
+    try:
+        for fname in os.listdir(bot_bus.BOT_BUS_DIR):
+            if not fname.endswith(".jsonl"):
+                continue
+            try:
+                chat_id = int(fname[:-6])
+            except ValueError:
+                continue
+            path = os.path.join(bot_bus.BOT_BUS_DIR, fname)
+            _bus_positions[chat_id] = os.path.getsize(path)
+    except FileNotFoundError:
+        pass
+
     # Start background tasks
     asyncio.create_task(nudge_inactive_chats())
     asyncio.create_task(periodic_history_save())
