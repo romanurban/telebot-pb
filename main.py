@@ -34,7 +34,8 @@ from mcp.client.session import ClientSession
 from openai import AsyncOpenAI
 
 # Standard OpenAI client for image generation (not the Agents SDK wrapper)
-_openai_images_client = None if USE_OPENROUTER else AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+_openai_api_key = os.getenv("OPENAI_API_KEY", "")
+_openai_images_client = AsyncOpenAI(api_key=_openai_api_key) if _openai_api_key else None
 
 # === CONSTANTS & ENVIRONMENT VARIABLES ===
 
