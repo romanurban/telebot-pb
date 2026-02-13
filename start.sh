@@ -163,8 +163,8 @@ if [[ "$TARGET" == "all" ]]; then
         done
     fi
 
-    # Start MCP (detached / background)
-    NO_ATTACH=true "$0" mcp start
+    # Start MCP (restart to pick up code changes)
+    NO_ATTACH=true "$0" mcp restart
 
     # Give MCP a moment to bind its port
     sleep 2
@@ -212,9 +212,19 @@ if [[ "$TARGET" == "autoupdate" ]]; then
                     stop_session "$sess"
                 done
 
+                # Start MCP first, then bots after a delay
                 for sess in $sessions; do
                     target="${sess#telebot-}"
-                    NO_ATTACH=true "$0" "$target" start &
+                    if [[ "$target" == "mcp" ]]; then
+                        NO_ATTACH=true "$0" "$target" start
+                        sleep 2
+                    fi
+                done
+                for sess in $sessions; do
+                    target="${sess#telebot-}"
+                    if [[ "$target" != "mcp" ]]; then
+                        NO_ATTACH=true "$0" "$target" start &
+                    fi
                 done
                 wait
                 echo "$(date): All processes restarted."
