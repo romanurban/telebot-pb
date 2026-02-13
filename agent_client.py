@@ -42,7 +42,11 @@ _histories: dict[int, list[dict]] = {}  # chat_id -> last N user messages
 
 
 def _normalize_history(history: list[dict]) -> list[dict]:
-    """Convert plain text content to the typed format used by the Agents SDK API."""
+    """Convert plain text content to the typed format expected by the model API.
+
+    When using OpenRouter (Chat Completions API), content stays as plain strings.
+    When using OpenAI (Responses API), content uses typed blocks (input_text/output_text).
+    """
     normalized = []
 
     for msg in history:
@@ -57,6 +61,22 @@ def _normalize_history(history: list[dict]) -> list[dict]:
             normalized.append(msg_copy)
             continue
 
+        # Chat Completions API (OpenRouter): keep content as plain strings
+        if USE_OPENROUTER:
+            if isinstance(content, list):
+                # Extract text from typed blocks into a plain string
+                texts = []
+                for item in content:
+                    if isinstance(item, dict) and "text" in item:
+                        texts.append(item["text"])
+                    elif isinstance(item, str):
+                        texts.append(item)
+                if texts:
+                    msg_copy["content"] = "\n".join(texts)
+            normalized.append(msg_copy)
+            continue
+
+        # Responses API (OpenAI): use typed content blocks
         if role in ("user", "bot"):
             target_type = "input_text"
         elif role == "assistant":
