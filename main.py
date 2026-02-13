@@ -279,10 +279,13 @@ async def ask_openai_image(
             with NamedTemporaryFile(delete=False, dir="/tmp", suffix=".jpg") as f:
                 f.write(image_bytes)
                 tmp_file = f.name
+            # Call MCP tool directly (agent can't invoke MCP tools via OpenRouter)
+            description = await analyze_image_via_mcp(tmp_file, prompt)
             agent_prompt = (
-                f"User sent a photo saved at {tmp_file}. "
-                f"Use the analyze_image tool to see what's in it. "
-                f"Prompt: {prompt}"
+                f"User sent a photo. Here is the image description:\n"
+                f"{description}\n\n"
+                f"Original prompt: {prompt}\n"
+                f"Respond naturally based on the image description."
             )
             return await ask_openai_contents(chat_id, agent_prompt)
         except Exception as e:
@@ -925,6 +928,20 @@ async def retrieve_fact() -> str:
         async with ClientSession(read, write) as session:
             await session.initialize()
             resp = await session.call_tool("retrieve_fact", {})
+            if not resp.content:
+                raise ValueError("no data returned")
+            return resp.content[0].text.strip()
+
+
+async def analyze_image_via_mcp(image_path: str, prompt: str) -> str:
+    """Analyze an image via the MCP tool and return the text description."""
+
+    async with sse_client(MCP_SERVER_URL) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            resp = await session.call_tool(
+                "analyze_image", {"image_path": image_path, "prompt": prompt}
+            )
             if not resp.content:
                 raise ValueError("no data returned")
             return resp.content[0].text.strip()
