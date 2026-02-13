@@ -5,6 +5,7 @@ from agents import (
     Runner,
     AsyncOpenAI,
     set_default_openai_client,
+    set_tracing_disabled,
     ModelSettings,
     RunConfig,
 )
@@ -25,6 +26,7 @@ MAX_HISTORY = 20  # Keep last N messages (user + assistant) per chat
 
 if USE_OPENROUTER:
     openai_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+    set_tracing_disabled(True)
 else:
     openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 set_default_openai_client(openai_client)
