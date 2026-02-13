@@ -9,6 +9,7 @@ from agents import (
     ModelSettings,
     RunConfig,
 )
+from agents.models.openai_provider import OpenAIProvider
 from agents.mcp import MCPServerSse
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "<YOUR_OPENAI_API_KEY>")
@@ -26,9 +27,11 @@ MAX_HISTORY = 20  # Keep last N messages (user + assistant) per chat
 
 if USE_OPENROUTER:
     openai_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+    _openrouter_provider = OpenAIProvider(openai_client=openai_client, use_responses=False)
     set_tracing_disabled(True)
 else:
     openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    _openrouter_provider = None
 set_default_openai_client(openai_client)
 
 
@@ -134,9 +137,12 @@ async def ask_agent(contents: list[dict], chat_id: int, *, tool_choice: str | No
     api_history = _normalize_history(api_history)
     print(f"[ask_agent] Chat {chat_id}: sending {len(api_history)} messages")
 
-    run_cfg = None
+    run_cfg_kwargs = {}
+    if _openrouter_provider:
+        run_cfg_kwargs["model_provider"] = _openrouter_provider
     if tool_choice:
-        run_cfg = RunConfig(model_settings=ModelSettings(tool_choice=tool_choice))
+        run_cfg_kwargs["model_settings"] = ModelSettings(tool_choice=tool_choice)
+    run_cfg = RunConfig(**run_cfg_kwargs) if run_cfg_kwargs else None
     result = await Runner.run(_agent, api_history, run_config=run_cfg)
 
     reply = str(result.final_output)
