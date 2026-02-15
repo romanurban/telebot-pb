@@ -62,6 +62,7 @@ def _normalize_history(history: list[dict]) -> list[dict]:
             continue
 
         # Chat Completions API (OpenRouter): keep content as plain strings
+        # and strip to only role+content to avoid confusing strict providers.
         if USE_OPENROUTER:
             if isinstance(content, list):
                 # Extract text from typed blocks into a plain string
@@ -71,9 +72,13 @@ def _normalize_history(history: list[dict]) -> list[dict]:
                         texts.append(item["text"])
                     elif isinstance(item, str):
                         texts.append(item)
-                if texts:
-                    msg_copy["content"] = "\n".join(texts)
-            normalized.append(msg_copy)
+                msg_copy["content"] = "\n".join(texts) if texts else ""
+            elif not isinstance(content, str):
+                msg_copy["content"] = str(content) if content else ""
+            # Strip to only role + content — strict providers reject unknown fields
+            clean = {"role": msg_copy["role"], "content": msg_copy["content"]}
+            if clean["content"]:
+                normalized.append(clean)
             continue
 
         # Responses API (OpenAI): use typed content blocks
