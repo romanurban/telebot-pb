@@ -147,10 +147,7 @@ def validate_environment():
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN.startswith("<"):
         missing.append("TELEGRAM_TOKEN")
 
-    if USE_OPENROUTER:
-        if not os.getenv("OPENROUTER_MODEL"):
-            missing.append("OPENROUTER_MODEL")
-    else:
+    if not USE_OPENROUTER:
         if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("<"):
             missing.append("OPENAI_API_KEY")
 

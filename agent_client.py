@@ -20,7 +20,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-USE_OPENROUTER = bool(OPENROUTER_API_KEY)
+USE_OPENROUTER = bool(OPENROUTER_API_KEY and OPENROUTER_MODEL)
 
 HISTORY_DIR = "chat_history"
 MAX_HISTORY = 20  # Keep last N messages (user + assistant) per chat
