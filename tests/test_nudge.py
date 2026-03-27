@@ -52,25 +52,28 @@ async def test_nudge_inactive_chat(monkeypatch):
 
     monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: None)
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
+    monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
+    monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    import state
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
     main.last_activity_time[chat_id] = past
-    main.nudge_loop_started_at = past
+    state.nudge_loop_started_at = past
 
     ask_mock = AsyncMock(return_value='nudge-msg')
     send_mock = AsyncMock()
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
     monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
-    monkeypatch.setattr(main, 'is_active_hours', lambda: True)
 
     sleep_calls = []
 
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
-        if len(sleep_calls) >= 2:
-            raise StopIteration
+        if seconds == main.NUDGE_CHECK_INTERVAL and len(sleep_calls) >= 2:
+            raise RuntimeError('stop')
 
-    monkeypatch.setattr(main.asyncio, 'sleep', fake_sleep)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -142,25 +145,28 @@ async def test_manual_nudge_works_when_disabled(monkeypatch):
 
 def test_get_nudge_prompt_time_based(monkeypatch):
     """Return first nudge only during the morning window."""
-    monkeypatch.setattr(main, "FIRST_NUDGE_PROMPT", "FIRST")
-    monkeypatch.setattr(main, "FIRST_NUDGE_ENABLED", True)
-    monkeypatch.setattr(main, "get_random_nudge_prompt", lambda: "RANDOM")
+    monkeypatch.setattr(main, 'FIRST_NUDGE_PROMPT', 'FIRST')
+    monkeypatch.setattr(main, 'FIRST_NUDGE_ENABLED', True
+    )
+    monkeypatch.setattr(main, 'NUDGE_SYSTEM_PROMPTS', ['RANDOM'])
 
     class Morning(datetime):
         @classmethod
         def now(cls, tz=None):
             return cls(2024, 1, 1, 10, 30, tzinfo=main.BOT_TIMEZONE)
 
-    monkeypatch.setattr(main, "datetime", Morning)
-    assert main.get_nudge_prompt(1) == "FIRST"
+    monkeypatch.setattr(main, 'BOT_TIMEZONE', main.BOT_TIMEZONE)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module, 'datetime', Morning)
+    assert main.get_nudge_prompt(1) == 'FIRST'
 
     class Afternoon(datetime):
         @classmethod
         def now(cls, tz=None):
             return cls(2024, 1, 1, 12, 30, tzinfo=main.BOT_TIMEZONE)
 
-    monkeypatch.setattr(main, "datetime", Afternoon)
-    assert main.get_nudge_prompt(1) == "RANDOM"
+    monkeypatch.setattr(nudge_module, 'datetime', Afternoon)
+    assert main.get_nudge_prompt(1) == 'RANDOM'
 
 
 @pytest.mark.asyncio
@@ -172,17 +178,19 @@ async def test_nudge_blocked_during_startup_grace(monkeypatch):
     main.bot_unmentioned_count.clear()
 
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
+    monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
+    monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
     chat_id = 100
     now = main.datetime.now()
     # Activity was long ago but startup was just now
     main.last_activity_time[chat_id] = now - main.timedelta(minutes=main.NUDGE_MINUTES + 10)
-    main.nudge_loop_started_at = now  # just started
+    import state
+    state.nudge_loop_started_at = now  # just started
 
     ask_mock = AsyncMock(return_value='nudge-msg')
     send_mock = AsyncMock()
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
     monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
-    monkeypatch.setattr(main, 'is_active_hours', lambda: True)
 
     call_count = 0
 
@@ -190,9 +198,10 @@ async def test_nudge_blocked_during_startup_grace(monkeypatch):
         nonlocal call_count
         call_count += 1
         if call_count >= 2:
-            raise StopIteration
+            raise RuntimeError('stop')
 
-    monkeypatch.setattr(main.asyncio, 'sleep', fake_sleep)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -212,25 +221,28 @@ async def test_nudge_allowed_after_startup_grace(monkeypatch):
 
     monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: None)
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
+    monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
+    monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
     main.last_activity_time[chat_id] = past
-    main.nudge_loop_started_at = past  # started long ago
+    import state
+    state.nudge_loop_started_at = past  # started long ago
 
     ask_mock = AsyncMock(return_value='nudge-msg')
     send_mock = AsyncMock()
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
     monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
-    monkeypatch.setattr(main, 'is_active_hours', lambda: True)
 
     sleep_calls = []
 
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
-        if len(sleep_calls) >= 2:
-            raise StopIteration
+        if seconds == main.NUDGE_CHECK_INTERVAL and len(sleep_calls) >= 2:
+            raise RuntimeError('stop')
 
-    monkeypatch.setattr(main.asyncio, 'sleep', fake_sleep)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -249,10 +261,13 @@ async def test_automatic_nudge_clears_history(monkeypatch):
 
     monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: None)
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
+    monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
+    monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    import state
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
     main.last_activity_time[chat_id] = past
-    main.nudge_loop_started_at = past
+    state.nudge_loop_started_at = past
 
     # Seed history so we can verify it gets cleared
     agent_client._histories[chat_id] = [{"role": "user", "content": "old message"}]
@@ -261,7 +276,6 @@ async def test_automatic_nudge_clears_history(monkeypatch):
     send_mock = AsyncMock()
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
     monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
-    monkeypatch.setattr(main, 'is_active_hours', lambda: True)
 
     call_order = []
     original_clear = agent_client.clear_history
@@ -284,10 +298,11 @@ async def test_automatic_nudge_clears_history(monkeypatch):
 
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
-        if len(sleep_calls) >= 2:
-            raise StopIteration
+        if seconds == main.NUDGE_CHECK_INTERVAL and len(sleep_calls) >= 2:
+            raise RuntimeError('stop')
 
-    monkeypatch.setattr(main.asyncio, 'sleep', fake_sleep)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -373,25 +388,28 @@ async def test_nudge_skipped_when_bus_has_recent_activity(monkeypatch):
     main.bot_unmentioned_count.clear()
 
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
+    monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
+    monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    import state
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
     main.last_activity_time[chat_id] = past
-    main.nudge_loop_started_at = past
+    state.nudge_loop_started_at = past
 
     ask_mock = AsyncMock(return_value='nudge-msg')
     send_mock = AsyncMock()
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
     monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
-    monkeypatch.setattr(main, 'is_active_hours', lambda: True)
 
     # Simulate another bot having posted 10 minutes ago via the bus
     recent_ts = _time.time() - 10 * 60
     monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: recent_ts)
 
     async def fake_sleep(seconds):
-        raise StopIteration
+        raise RuntimeError('stop')
 
-    monkeypatch.setattr(main.asyncio, 'sleep', fake_sleep)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -412,16 +430,18 @@ async def test_nudge_allowed_when_bus_activity_expired(monkeypatch):
     main.bot_unmentioned_count.clear()
 
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
+    monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
+    monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    import state
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
     main.last_activity_time[chat_id] = past
-    main.nudge_loop_started_at = past
+    state.nudge_loop_started_at = past
 
     ask_mock = AsyncMock(return_value='nudge-msg')
     send_mock = AsyncMock()
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
     monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
-    monkeypatch.setattr(main, 'is_active_hours', lambda: True)
 
     # Bus activity is old (NUDGE_MINUTES + 5 min ago)
     old_ts = _time.time() - (main.NUDGE_MINUTES + 5) * 60
@@ -431,10 +451,11 @@ async def test_nudge_allowed_when_bus_activity_expired(monkeypatch):
 
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
-        if len(sleep_calls) >= 2:
-            raise StopIteration
+        if seconds == main.NUDGE_CHECK_INTERVAL and len(sleep_calls) >= 2:
+            raise RuntimeError('stop')
 
-    monkeypatch.setattr(main.asyncio, 'sleep', fake_sleep)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()

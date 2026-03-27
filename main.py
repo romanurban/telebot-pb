@@ -15,6 +15,7 @@ from agent_client import (
     create_thread_with_system_prompt,
     ask_agent,
     inject_external_message,
+    USE_OPENROUTER,
 )
 import agent_client
 import bot_bus
@@ -72,7 +73,7 @@ from state import (
     _bus_positions,
     _bus_last_reply,
 )
-from claims import try_claim_message as _try_claim_message, cleanup_old_claims, CLAIM_DIR
+from claims import claim_key as _claims_claim_key, try_claim_message as _try_claim_message, cleanup_old_claims, CLAIM_DIR
 
 _openai_images_client = get_openai_images_client()
 
@@ -105,7 +106,38 @@ def is_active_hours():
     return ACTIVE_START <= datetime.now(BOT_TIMEZONE).time() <= ACTIVE_END
 
 
+def get_random_nudge_prompt():
+    from nudge import get_random_nudge_prompt as _get_random_nudge_prompt
+
+    return _get_random_nudge_prompt(
+        NUDGE_SYSTEM_PROMPTS,
+        nudge_prompt_history,
+        NUDGE_PROMPT_HISTORY_LEN,
+    )
+
+
+def get_nudge_prompt(chat_id: int) -> str:
+    _ = chat_id
+    return build_nudge_prompt(
+        bot_timezone=BOT_TIMEZONE,
+        first_nudge_enabled=FIRST_NUDGE_ENABLED,
+        first_nudge_start=FIRST_NUDGE_START,
+        first_nudge_end=FIRST_NUDGE_END,
+        first_nudge_prompt=FIRST_NUDGE_PROMPT,
+        nudge_system_prompts=NUDGE_SYSTEM_PROMPTS,
+        nudge_prompt_history=nudge_prompt_history,
+        nudge_prompt_history_len=NUDGE_PROMPT_HISTORY_LEN,
+    )
+
+
+def _claim_key(message: Message) -> str:
+    return _claims_claim_key(message)
+
+
 async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
+    import claims as _claims
+
+    _claims.CLAIM_DIR = CLAIM_DIR
     return await _try_claim_message(bot, BOT_USERNAME, message, emoji=emoji)
 
 
@@ -631,7 +663,9 @@ async def generate_image_from_observation(observation: str) -> bytes:
 async def nudge_inactive_chats(
     force: bool = False, force_chat_id: int = None, force_message=None
 ):
-    nudge_started_ref = [nudge_loop_started_at]
+    import state as _state
+
+    nudge_started_ref = [_state.nudge_loop_started_at]
 
     def _get_nudge_prompt(_chat_id: int) -> str:
         return build_nudge_prompt(
@@ -645,28 +679,31 @@ async def nudge_inactive_chats(
             nudge_prompt_history_len=NUDGE_PROMPT_HISTORY_LEN,
         )
 
-    await run_nudge_loop(
-        force=force,
-        force_chat_id=force_chat_id,
-        force_message=force_message,
-        ask_agent=ask_agent,
-        clean_openai_reply=clean_openai_reply,
-        mark_bot_replied=mark_bot_replied,
-        send_nudge_with_image=send_nudge_with_image,
-        bot=bot,
-        bot_username=BOT_USERNAME,
-        bot_timezone=BOT_TIMEZONE,
-        active_start=ACTIVE_START,
-        active_end=ACTIVE_END,
-        nudge_minutes=NUDGE_MINUTES,
-        nudge_enabled_chats=NUDGE_ENABLED_CHATS,
-        nudge_reset_interval=NUDGE_RESET_INTERVAL,
-        nudge_check_interval=NUDGE_CHECK_INTERVAL,
-        last_activity_time=last_activity_time,
-        nudge_loop_started_at_ref=nudge_started_ref,
-        bot_unmentioned_count=bot_unmentioned_count,
-        get_nudge_prompt_for_chat=_get_nudge_prompt,
-    )
+    try:
+        await run_nudge_loop(
+            force=force,
+            force_chat_id=force_chat_id,
+            force_message=force_message,
+            ask_agent=ask_agent,
+            clean_openai_reply=clean_openai_reply,
+            mark_bot_replied=mark_bot_replied,
+            send_nudge_with_image=send_nudge_with_image,
+            bot=bot,
+            bot_username=BOT_USERNAME,
+            bot_timezone=BOT_TIMEZONE,
+            active_start=ACTIVE_START,
+            active_end=ACTIVE_END,
+            nudge_minutes=NUDGE_MINUTES,
+            nudge_enabled_chats=NUDGE_ENABLED_CHATS,
+            nudge_reset_interval=NUDGE_RESET_INTERVAL,
+            nudge_check_interval=NUDGE_CHECK_INTERVAL,
+            last_activity_time=last_activity_time,
+            nudge_loop_started_at_ref=nudge_started_ref,
+            bot_unmentioned_count=bot_unmentioned_count,
+            get_nudge_prompt_for_chat=_get_nudge_prompt,
+        )
+    finally:
+        _state.nudge_loop_started_at = nudge_started_ref[0]
 
 
 def mark_bot_replied(chat_id):
