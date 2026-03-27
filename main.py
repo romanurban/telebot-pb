@@ -1,5 +1,4 @@
 import os
-import re
 import logging
 import random
 from aiogram import Bot, Dispatcher
@@ -16,63 +15,66 @@ from agent_client import (
     create_thread_with_system_prompt,
     ask_agent,
     inject_external_message,
-    USE_OPENROUTER,
 )
 import agent_client
 import bot_bus
+from bus_runtime import initialize_bus_positions, poll_bot_bus
+from nudge import nudge_inactive_chats as run_nudge_loop, get_nudge_prompt as build_nudge_prompt
+from handlers.messages import handle_text_message
+from handlers.photos import handle_photo_message
 import base64
 from tempfile import NamedTemporaryFile
 import aiohttp
-from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 import io
 from aiogram.types.input_file import BufferedInputFile, FSInputFile
-import yaml
 import json
 from mcp.client.sse import sse_client
 from mcp.client.session import ClientSession
-from openai import AsyncOpenAI
+from config import (
+    TELEGRAM_TOKEN,
+    OPENAI_API_KEY,
+    BOT_USERNAME,
+    SYSTEM_PROMPT_FILE,
+    NUDGE_MINUTES,
+    IMAGE_GEN_MODEL,
+    MCP_SERVER_URL,
+    NUDGE_SYSTEM_PROMPTS,
+    IMAGE_DEFAULT_PROMPT,
+    CHAT_REACT_PROMPT,
+    IMAGE_GEN_INPUT_PROMPT,
+    NAME_MENTION_RE,
+    FIRST_NUDGE_PROMPT,
+    FIRST_NUDGE_START,
+    FIRST_NUDGE_END,
+    FIRST_NUDGE_ENABLED,
+    NUDGE_ENABLED_CHATS,
+    NUDGE_PROMPT_HISTORY_LEN,
+    nudge_prompt_history,
+    BOT_TIMEZONE,
+    ACTIVE_START,
+    ACTIVE_END,
+    MAX_UNMENTIONED_REPLIES,
+    IMAGE_SEND_CHANCE,
+    NUDGE_RESET_INTERVAL,
+    NUDGE_CHECK_INTERVAL,
+    RECENT_ACTIVITY_SECONDS,
+    get_openai_images_client,
+    validate_environment,
+    is_active_hours,
+)
+from state import (
+    last_activity_time,
+    nudge_loop_started_at,
+    last_bot_reply_time,
+    bot_unmentioned_count,
+    messages_since_bot_reply,
+    _bus_positions,
+    _bus_last_reply,
+)
+from claims import try_claim_message as _try_claim_message, cleanup_old_claims, CLAIM_DIR
 
-# Standard OpenAI client for image generation (not the Agents SDK wrapper)
-_openai_api_key = os.getenv("OPENAI_API_KEY", "")
-_openai_images_client = AsyncOpenAI(api_key=_openai_api_key) if _openai_api_key else None
-
-# === CONSTANTS & ENVIRONMENT VARIABLES ===
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "")
-# Load the system prompt from a YAML file named after the bot in the prompts folder
-SYSTEM_PROMPT_FILE = os.path.join("prompts", BOT_USERNAME, "system_prompt.yaml")
-BOT_PROMPTS_FILE = os.path.join("prompts", BOT_USERNAME, "bot_prompts.yaml")
-DEFAULT_BOT_PROMPTS_FILE = os.path.join("prompts", "default_bot", "bot_prompts.yaml")
-
-NUDGE_MINUTES = int(
-    os.getenv("NUDGE_MINUTES", 120)
-)  # Minutes of inactivity before nudge (default 2 hours)
-# Random per-bot offset (+/-20-30 min) so multiple bots don't nudge simultaneously
-NUDGE_RANDOM_OFFSET = random.choice([-1, 1]) * random.randint(20, 30)
-NUDGE_MINUTES = max(30, NUDGE_MINUTES + NUDGE_RANDOM_OFFSET)
-IMAGE_GEN_MODEL = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
-MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8888/sse")
-
-# Load default prompts from the example bot and override them with bot-specific
-# values if present.
-_prompt_data = {}
-if os.path.exists(DEFAULT_BOT_PROMPTS_FILE):
-    with open(DEFAULT_BOT_PROMPTS_FILE, "r", encoding="utf-8") as f:
-        _prompt_data.update(yaml.safe_load(f) or {})
-
-if os.path.exists(BOT_PROMPTS_FILE):
-    with open(BOT_PROMPTS_FILE, "r", encoding="utf-8") as f:
-        _prompt_data.update(yaml.safe_load(f) or {})
-
-NUDGE_SYSTEM_PROMPTS = _prompt_data.get("nudge_system_prompts", [])
-IMAGE_DEFAULT_PROMPT = _prompt_data.get("image_default_prompt", "")
-CHAT_REACT_PROMPT = _prompt_data.get("chat_react_prompt", "")
-IMAGE_GEN_INPUT_PROMPT = _prompt_data.get("image_gen_input_prompt", "")
-_name_patterns = _prompt_data.get("name_mention_patterns", [])
-NAME_MENTION_RE = re.compile("|".join(_name_patterns), re.IGNORECASE) if _name_patterns else None
+_openai_images_client = get_openai_images_client()
 
 def _needs_voice_tool(text: str) -> bool:
     """Return True if ``text`` requests a voice message."""
@@ -80,157 +82,31 @@ def _needs_voice_tool(text: str) -> bool:
     words = tl.split()
     return any(word.startswith("голос") for word in words)
 
-FIRST_NUDGE_PROMPT = NUDGE_SYSTEM_PROMPTS[0] if NUDGE_SYSTEM_PROMPTS else ""
-FIRST_NUDGE_START = time(10, 0)
-FIRST_NUDGE_END = time(12, 0)
-FIRST_NUDGE_ENABLED = os.getenv("FIRST_NUDGE_ENABLED", "false").lower() in ("true", "1", "yes")
-
-# Comma-separated list of chat IDs where nudge is enabled
-# Example: NUDGE_ENABLED_CHATS="-123456789,-987654321"
-_nudge_chats_str = os.getenv("NUDGE_ENABLED_CHATS", "")
-NUDGE_ENABLED_CHATS = set()
-if _nudge_chats_str:
-    for chat_id_str in _nudge_chats_str.split(","):
-        try:
-            NUDGE_ENABLED_CHATS.add(int(chat_id_str.strip()))
-        except ValueError:
-            logging.warning(f"Invalid chat ID in NUDGE_ENABLED_CHATS: {chat_id_str}")
-
-# Short history for nudge prompts to avoid recent repeats
-NUDGE_PROMPT_HISTORY_LEN = 3  # Number of previous prompts to avoid
-nudge_prompt_history = []
-
-BOT_TIMEZONE = ZoneInfo(os.getenv("BOT_TIMEZONE", "Europe/Riga"))
-
-# Parse active hours from env (format: "HH:MM")
-def _parse_time(time_str: str, default: time) -> time:
-    try:
-        h, m = time_str.split(":")
-        return time(int(h), int(m))
-    except (ValueError, AttributeError):
-        return default
-
-ACTIVE_START = _parse_time(os.getenv("ACTIVE_START", "10:00"), time(10, 0))
-ACTIVE_END = _parse_time(os.getenv("ACTIVE_END", "21:00"), time(21, 0))
-
-MAX_UNMENTIONED_REPLIES = 3
-
-# Additional configuration constants
-IMAGE_SEND_CHANCE = float(os.getenv("IMAGE_SEND_CHANCE", 0.3))  # Probability of sending an image with a nudge
-NUDGE_RESET_INTERVAL = 300  # Seconds between unmentioned counter resets
-NUDGE_CHECK_INTERVAL = 60  # Interval between inactivity checks
-RECENT_ACTIVITY_SECONDS = 30  # Window to treat bot replies as "recent"
-
 # === GLOBAL STATE ===
 # Note: chat histories now managed in agent_client._histories
-last_activity_time = {}  # chat_id: datetime — any message, used by nudge timer
-nudge_loop_started_at = None  # set when nudge loop starts; prevents nudging right after restart
-last_bot_reply_time = {}  # chat_id: datetime — bot replies only, used by probabilistic logic
-bot_unmentioned_count = {}  # chat_id: int
-messages_since_bot_reply = {}  # chat_id: int — user messages since last bot reply
-CLAIM_DIR = "/tmp/telebot_claims"
-os.makedirs(CLAIM_DIR, exist_ok=True)
-
-# Bot bus: track file read positions per chat
-_bus_positions: dict[int, int] = {}
-_bus_last_reply: dict[int, float] = {}  # chat_id -> timestamp of last bus-triggered reply
-BOT_BUS_POLL_INTERVAL = 3  # seconds between bus polls
-BOT_BUS_REPLY_COOLDOWN = 60  # min seconds between bus-triggered replies per chat
 
 logging.basicConfig(level=logging.INFO)
-
-# Validate required environment variables
-def validate_environment():
-    """Validate that all required environment variables are set."""
-    missing = []
-
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN.startswith("<"):
-        missing.append("TELEGRAM_TOKEN")
-
-    if not USE_OPENROUTER:
-        if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("<"):
-            missing.append("OPENAI_API_KEY")
-
-    if not BOT_USERNAME:
-        missing.append("BOT_USERNAME")
-
-    if missing:
-        logging.error("Missing required environment variables:")
-        for var in missing:
-            logging.error(f"  - {var}")
-        logging.error("\nPlease create a .env file with these variables.")
-        logging.error("See .env.example for reference.")
-        raise SystemExit(1)
-
-    # Validate that system prompt file exists
-    if not os.path.exists(SYSTEM_PROMPT_FILE):
-        logging.error(f"System prompt file not found: {SYSTEM_PROMPT_FILE}")
-        logging.error(f"Please create prompts/{BOT_USERNAME}/system_prompt.yaml")
-        logging.error("You can copy from prompts/default_bot/ as a starting point.")
-        raise SystemExit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
 
-# Helper: check if current time in Europe/Riga is between ACTIVE_START and ACTIVE_END
+def validate_environment():
+    import config as _config
+
+    _config.TELEGRAM_TOKEN = TELEGRAM_TOKEN
+    _config.OPENAI_API_KEY = OPENAI_API_KEY
+    _config.BOT_USERNAME = BOT_USERNAME
+    _config.SYSTEM_PROMPT_FILE = SYSTEM_PROMPT_FILE
+    return _config.validate_environment()
+
+
 def is_active_hours():
-    now = datetime.now(BOT_TIMEZONE).time()
-    return ACTIVE_START <= now <= ACTIVE_END
-
-
-def _claim_key(message: Message) -> str:
-    """Build a claim key consistent across different bots.
-
-    Telegram gives different ``message_id`` values to different bots for
-    the same message, so we derive the key from fields that are identical
-    for all bots: chat id, sender id, timestamp, and a hash of the text.
-    """
-    import hashlib
-
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    date = int(message.date.timestamp())
-    text = message.text or message.caption or ""
-    content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
-    return f"{chat_id}_{user_id}_{date}_{content_hash}"
+    return ACTIVE_START <= datetime.now(BOT_TIMEZONE).time() <= ACTIVE_END
 
 
 async def try_claim_message(message: Message, emoji: str = "👀") -> bool:
-    """Try to claim a message via an atomic file lock.
-
-    Uses O_CREAT | O_EXCL to guarantee only one bot wins the claim.
-    The reaction emoji is added as a visual indicator only.
-    """
-    key = _claim_key(message)
-    claim_path = os.path.join(CLAIM_DIR, key)
-    logging.info(f"[claim] {BOT_USERNAME} trying to claim key={key}")
-
-    # Random delay to desynchronize bots
-    await asyncio.sleep(random.uniform(0.5, 3.0))
-
-    # Atomic claim: O_CREAT | O_EXCL fails if file already exists
-    try:
-        fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, BOT_USERNAME.encode())
-        os.close(fd)
-    except FileExistsError:
-        logging.info(f"[claim] {BOT_USERNAME} LOST claim for key={key}")
-        return False
-
-    logging.info(f"[claim] {BOT_USERNAME} WON claim for key={key}")
-
-    # Visual indicator only — not used for coordination
-    try:
-        await bot.set_message_reaction(
-            chat_id=message.chat.id,
-            message_id=message.message_id,
-            reaction=[ReactionTypeEmoji(emoji=emoji)],
-        )
-    except Exception:
-        pass
-
-    return True
+    return await _try_claim_message(bot, BOT_USERNAME, message, emoji=emoji)
 
 
 async def ask_openai_contents(chat_id: int, contents, role="user", *, tool_choice: str | None = None) -> str:
@@ -596,289 +472,47 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
 
 @dp.message(F.text)
 async def handle_message(message: Message):
-    if message.from_user and message.from_user.is_bot:
-        return
-    print(
-        f"[Chat ID: {message.chat.id}] Received message from {message.from_user.username or message.from_user.id}: {message.text}"
+    await handle_text_message(
+        message,
+        bot_username=BOT_USERNAME,
+        name_mention_re=NAME_MENTION_RE,
+        image_default_prompt=IMAGE_DEFAULT_PROMPT,
+        chat_react_prompt=CHAT_REACT_PROMPT,
+        max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
+        recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
+        last_activity_time=last_activity_time,
+        messages_since_bot_reply=messages_since_bot_reply,
+        bot_unmentioned_count=bot_unmentioned_count,
+        last_bot_reply_time=last_bot_reply_time,
+        try_claim_message=try_claim_message,
+        nudge_inactive_chats=nudge_inactive_chats,
+        get_picture_of_the_day=get_picture_of_the_day,
+        style_caption=style_caption,
+        retrieve_joke=retrieve_joke,
+        retrieve_fact=retrieve_fact,
+        generate_voice_file=generate_voice_file,
+        ask_openai=ask_openai,
+        ask_agent=ask_agent,
+        clean_openai_reply=clean_openai_reply,
+        mark_bot_replied=mark_bot_replied,
+        extract_voice_file=_extract_voice_file,
+        extract_json_image=_extract_json_image,
+        needs_voice_tool=_needs_voice_tool,
     )
-    if not message.text:
-        return
-
-    chat_id = message.chat.id
-    username = message.from_user.username or str(message.from_user.id)
-
-    # Any user message resets the nudge inactivity timer
-    INACTIVITY_CLEAR_MINUTES = 30
-    last_time = last_activity_time.get(chat_id)
-    last_activity_time[chat_id] = datetime.now()
-    messages_since_bot_reply[chat_id] = messages_since_bot_reply.get(chat_id, 0) + 1
-
-    # Clear stale history after a long silence so the bot starts fresh
-    if last_time and (datetime.now() - last_time).total_seconds() / 60 >= INACTIVITY_CLEAR_MINUTES:
-        agent_client.clear_history(chat_id)
-        logging.info(f"[handle] Cleared stale history for chat {chat_id} after inactivity")
-
-    # Manual nudge trigger by command (handles /nudge, /nudge@bot and arguments)
-    command = message.text.strip().split()[0].split("@")[0].lower()
-    if command == "/nudge":
-        # /nudge without @bot is addressed to all bots — claim it first
-        raw_command = message.text.strip().split()[0].lower()
-        if "@" not in raw_command:
-            if not await try_claim_message(message):
-                return
-        await nudge_inactive_chats(
-            force=True, force_chat_id=chat_id, force_message=message
-        )
-        return
-    if command == "/potd":
-        if not await try_claim_message(message):
-            return
-        date_arg = message.text.strip().split(maxsplit=1)
-        date = date_arg[1] if len(date_arg) > 1 else ""
-        try:
-            img_data, caption = await get_picture_of_the_day(date)
-            styled = await style_caption(caption, chat_id=chat_id)
-            if isinstance(img_data, bytes):
-                photo = BufferedInputFile(img_data, filename="potd.jpg")
-            else:
-                photo = FSInputFile(img_data)
-            await message.answer_photo(photo, caption=styled)
-            if isinstance(img_data, str):
-                try:
-                    os.remove(img_data)
-                except Exception:
-                    pass
-            mark_bot_replied(chat_id)
-        except Exception as e:
-            await message.answer(f"Error: {e}")
-        return
-    if command == "/meme":
-        if not await try_claim_message(message):
-            return
-        try:
-            path = await retrieve_joke()
-            photo = FSInputFile(path)
-            await message.answer_photo(photo)
-            mark_bot_replied(chat_id)
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-        except Exception as e:
-            await message.answer(f"Error: {e}")
-        return
-    if command == "/fact":
-        if not await try_claim_message(message):
-            return
-        try:
-            fact = await retrieve_fact()
-            await message.answer(fact)
-            mark_bot_replied(chat_id)
-        except Exception as e:
-            await message.answer(f"Error: {e}")
-        return
-    if command == "/voice":
-        if not await try_claim_message(message):
-            return
-        parts = message.text.strip().split(maxsplit=1)
-        if len(parts) < 2:
-            await message.answer("Usage: /voice <text>")
-            return
-        text = parts[1]
-        try:
-            path = await generate_voice_file(text)
-            voice = FSInputFile(path)
-            logging.debug(
-                "answer_voice: sending file %s (%d bytes)",
-                path,
-                os.path.getsize(path),
-            )
-            await message.answer_voice(voice)
-            mark_bot_replied(chat_id)
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-        except Exception as e:
-            await message.answer(f"Error: {e}")
-        return
-
-    # Handle direct mentions - these always get a response
-    mention_tag = f"@{BOT_USERNAME}".lower()
-    mentioned = mention_tag in message.text.lower() or (NAME_MENTION_RE is not None and bool(NAME_MENTION_RE.search(message.text)))
-    tool_choice = "generate_voice" if (mentioned and _needs_voice_tool(message.text)) else None
-
-    if mentioned:
-        prompt = re.sub(re.escape(mention_tag), "", message.text, count=1, flags=re.IGNORECASE).strip()
-        # History is now automatically managed by agent_client
-        answer = await ask_openai(
-            prompt,
-            username=username,
-            chat_id=chat_id,
-            tool_choice=tool_choice,
-        )
-        voice = await _extract_voice_file(answer)
-        if voice is None and tool_choice == "generate_voice":
-            try:
-                path = await generate_voice_file(answer)
-                voice = (path, "")
-            except Exception:
-                voice = None
-
-        if voice:
-            path, text = voice
-            voice_file = FSInputFile(path)
-            await message.answer_voice(voice_file)
-            mark_bot_replied(chat_id)
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-            answer = text
-        json_img = await _extract_json_image(answer)
-        if json_img:
-            img_data, raw_caption = json_img
-            styled = raw_caption
-            if raw_caption:
-                try:
-                    styled = await style_caption(raw_caption, chat_id=chat_id)
-                except Exception:
-                    pass
-            if isinstance(img_data, bytes):
-                photo = BufferedInputFile(img_data, filename="assistant.jpg")
-            else:
-                photo = FSInputFile(img_data)
-            await message.answer_photo(photo, caption=styled)
-            if isinstance(img_data, str):
-                try:
-                    os.remove(img_data)
-                except Exception:
-                    pass
-            mark_bot_replied(chat_id)
-        else:
-            mark_bot_replied(chat_id)
-            await message.answer(answer, parse_mode=ParseMode.HTML)
-        # Broadcast reply to bot bus so other bots can see it
-        if answer:
-            bot_bus.broadcast(chat_id, BOT_USERNAME, answer)
-        # Reset unmentioned counter since bot was mentioned
-        bot_unmentioned_count[chat_id] = 0
-        return
-
-    # --- Probabilistic reply logic for non-mentions ---
-
-    # If the message is explicitly @-directed at another bot, don't chime in
-    if re.search(r"@\w+bot\b", message.text, re.IGNORECASE):
-        return
-
-    # Track user messages since last bot reply
-    non_bot_count = messages_since_bot_reply.get(chat_id, 0)
-
-    # Check constraints
-    bot_unmentioned = bot_unmentioned_count.get(chat_id, 0)
-
-    # Don't respond if we've hit the unmentioned reply limit
-    if bot_unmentioned >= MAX_UNMENTIONED_REPLIES:
-        return
-
-    # Determine if bot should respond based on various factors
-    should_respond = False
-    now = datetime.now()
-    last_bot_time = last_bot_reply_time.get(chat_id)
-
-    # Recent activity increases response chance
-    if (
-        last_bot_time
-        and (now - last_bot_time).total_seconds() <= RECENT_ACTIVITY_SECONDS
-    ):
-        should_respond = True
-    else:
-        # Probabilistic response based on message count since last bot message
-        if non_bot_count == 0:
-            should_respond = random.random() < 0.1
-        elif non_bot_count == 1:
-            should_respond = random.random() < 0.25
-        elif non_bot_count == 2:
-            should_respond = random.random() < 0.5
-        elif non_bot_count == 3:
-            should_respond = random.random() < 0.75
-        else:  # 4+ messages without bot response
-            should_respond = True
-
-    if not should_respond:
-        return
-
-    # Increment unmentioned counter since we're replying without being mentioned
-    bot_unmentioned_count[chat_id] = bot_unmentioned + 1
-
-    # Record the actual user message in agent history, then instruct the
-    # agent to react via CHAT_REACT_PROMPT as a system-level hint.
-    formatted_msg = f"{username}: {message.text}"
-    message_list = [
-        {"role": "user", "content": formatted_msg},
-        {"role": "system", "content": CHAT_REACT_PROMPT},
-    ]
-    try:
-        raw_answer = await ask_agent(message_list, chat_id=chat_id, tool_choice=tool_choice)
-        answer = clean_openai_reply(raw_answer)
-    except Exception as e:
-        answer = f"LLM error: {e}"
-    voice = await _extract_voice_file(answer)
-    if voice:
-        path, text = voice
-        voice_file = FSInputFile(path)
-        await message.answer_voice(voice_file)
-        mark_bot_replied(chat_id)
-        try:
-            os.remove(path)
-        except Exception:
-            pass
-        answer = text
-    json_img = await _extract_json_image(answer)
-    if json_img:
-        img_data, raw_caption = json_img
-        styled = raw_caption
-        if raw_caption:
-            try:
-                styled = await style_caption(raw_caption, chat_id=chat_id)
-            except Exception:
-                pass
-        if isinstance(img_data, bytes):
-            photo = BufferedInputFile(img_data, filename="assistant.jpg")
-        else:
-            photo = FSInputFile(img_data)
-        await message.answer_photo(photo, caption=styled)
-        if isinstance(img_data, str):
-            try:
-                os.remove(img_data)
-            except Exception:
-                pass
-        mark_bot_replied(chat_id)
-    else:
-        mark_bot_replied(chat_id)
-        await message.answer(answer, parse_mode=ParseMode.HTML)
-    # Broadcast probabilistic reply to bot bus
-    if answer:
-        bot_bus.broadcast(chat_id, BOT_USERNAME, answer)
 
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
-    if message.from_user and message.from_user.is_bot:
-        return
-    if not await try_claim_message(message):
-        return
-    print(f"Received photo from {message.from_user.username or message.from_user.id}")
-    photo = message.photo[-1]  # Get the highest resolution photo
-    photo_bytes = await bot.download(photo)
-    image_bytes = photo_bytes.read()
-    prompt = message.caption if message.caption else IMAGE_DEFAULT_PROMPT
-    chat_id = message.chat.id
-    last_activity_time[chat_id] = datetime.now()
-    messages_since_bot_reply[chat_id] = messages_since_bot_reply.get(chat_id, 0) + 1
-    answer = await ask_openai_image(image_bytes, prompt, chat_id=chat_id)
-    mark_bot_replied(chat_id)
-    await message.reply(answer)
+    await handle_photo_message(
+        message,
+        bot=bot,
+        image_default_prompt=IMAGE_DEFAULT_PROMPT,
+        last_activity_time=last_activity_time,
+        messages_since_bot_reply=messages_since_bot_reply,
+        try_claim_message=try_claim_message,
+        ask_openai_image=ask_openai_image,
+        mark_bot_replied=mark_bot_replied,
+    )
 
 
 async def get_picture_of_the_day(date: str = "") -> tuple[str | bytes, str]:
@@ -997,99 +631,42 @@ async def generate_image_from_observation(observation: str) -> bytes:
 async def nudge_inactive_chats(
     force: bool = False, force_chat_id: int = None, force_message=None
 ):
-    if force and force_chat_id is not None and force_message is not None:
-        # Manual nudge for a specific chat
-        system_prompt = get_nudge_prompt(force_chat_id)
-        message_list = [{"role": "system", "content": system_prompt}]
-        raw_answer = await ask_agent(message_list, chat_id=force_chat_id)
-        answer = clean_openai_reply(raw_answer)
-        mark_bot_replied(force_chat_id)
-        await send_nudge_with_image(
-            force_message, force_chat_id, answer, is_message=True
+    nudge_started_ref = [nudge_loop_started_at]
+
+    def _get_nudge_prompt(_chat_id: int) -> str:
+        return build_nudge_prompt(
+            bot_timezone=BOT_TIMEZONE,
+            first_nudge_enabled=FIRST_NUDGE_ENABLED,
+            first_nudge_start=FIRST_NUDGE_START,
+            first_nudge_end=FIRST_NUDGE_END,
+            first_nudge_prompt=FIRST_NUDGE_PROMPT,
+            nudge_system_prompts=NUDGE_SYSTEM_PROMPTS,
+            nudge_prompt_history=nudge_prompt_history,
+            nudge_prompt_history_len=NUDGE_PROMPT_HISTORY_LEN,
         )
-        if answer:
-            bot_bus.broadcast(force_chat_id, BOT_USERNAME, answer)
-        return
-    global nudge_loop_started_at
-    last_reset = datetime.now()
-    if nudge_loop_started_at is None:
-        nudge_loop_started_at = datetime.now()
-    logging.info(f"[nudge] Starting nudge loop. NUDGE_ENABLED_CHATS={NUDGE_ENABLED_CHATS}, NUDGE_MINUTES={NUDGE_MINUTES}, Active hours: {ACTIVE_START}-{ACTIVE_END} {BOT_TIMEZONE}")
-    while True:
-        try:
-            current_time = datetime.now(BOT_TIMEZONE).time()
-            if not is_active_hours():
-                logging.info(f"[nudge] Outside active hours (current: {current_time}), sleeping...")
-                await asyncio.sleep(NUDGE_CHECK_INTERVAL)
-                continue
-            logging.info(f"[nudge] Active hours check passed (current: {current_time})")
-            now = datetime.now()
-            # Reset bot_unmentioned_count every 5 minutes
-            if (now - last_reset).total_seconds() >= NUDGE_RESET_INTERVAL:
-                bot_unmentioned_count.clear()
-                last_reset = now
-            all_chats = set(agent_client._histories.keys()) | set(last_activity_time.keys()) | NUDGE_ENABLED_CHATS
-            logging.debug(f"[nudge] Checking {len(all_chats)} chats: {all_chats}")
-            for chat_id in all_chats:
-                if chat_id not in NUDGE_ENABLED_CHATS:
-                    logging.debug(f"[nudge] Skipping chat {chat_id} - not in enabled list")
-                    continue
-                last_time = last_activity_time.get(chat_id)
-                if last_time is None:
-                    # No activity recorded (e.g. just restarted) — seed
-                    # with current time so the nudge timer starts counting
-                    last_activity_time[chat_id] = now
-                    continue
-                else:
-                    minutes_passed = (now - last_time).total_seconds() / 60
-                logging.info(f"[nudge] Chat {chat_id}: {minutes_passed:.1f} minutes since last message (threshold: {NUDGE_MINUTES})")
-                # Don't nudge until NUDGE_MINUTES has passed since startup
-                minutes_since_start = (now - nudge_loop_started_at).total_seconds() / 60
-                if minutes_since_start < NUDGE_MINUTES:
-                    logging.debug(f"[nudge] Chat {chat_id}: skipping — only {minutes_since_start:.1f} min since startup")
-                    continue
-                if minutes_passed >= NUDGE_MINUTES:
-                    # Check bus for recent activity from any bot
-                    import time as _time
-                    last_bus_ts = bot_bus.last_message_time(chat_id)
-                    if last_bus_ts is not None:
-                        bus_age_min = (_time.time() - last_bus_ts) / 60
-                        if bus_age_min < NUDGE_MINUTES:
-                            logging.info(f"[nudge] Skipping chat {chat_id} — bus activity {bus_age_min:.0f} min ago")
-                            continue
-                    # Random delay so the fastest bot broadcasts before others check
-                    await asyncio.sleep(random.uniform(5, 60))
-                    # Re-check bus after delay — another bot may have nudged
-                    last_bus_ts = bot_bus.last_message_time(chat_id)
-                    if last_bus_ts is not None:
-                        bus_age_min = (_time.time() - last_bus_ts) / 60
-                        if bus_age_min < NUDGE_MINUTES:
-                            logging.info(f"[nudge] Skipping chat {chat_id} — bus activity {bus_age_min:.0f} min ago (after delay)")
-                            continue
-                    try:
-                        logging.info(f"[nudge] Sending automatic nudge to chat {chat_id}")
-                        agent_client.clear_history(chat_id)
-                        system_prompt = get_nudge_prompt(chat_id)
-                        message_list = [{"role": "system", "content": system_prompt}]
-                        raw_answer = await ask_agent(message_list, chat_id=chat_id)
-                        answer = clean_openai_reply(raw_answer)
-                        mark_bot_replied(chat_id)
-                        await send_nudge_with_image(
-                            bot, chat_id, answer, caption="", is_message=False
-                        )
-                        if answer:
-                            bot_bus.broadcast(chat_id, BOT_USERNAME, answer)
-                        logging.info(f"[nudge] Nudge sent to chat {chat_id}")
-                    except Exception as e:
-                        logging.error(f"[nudge] Error sending nudge to chat {chat_id}: {e}", exc_info=True)
-                        continue
-            await asyncio.sleep(NUDGE_CHECK_INTERVAL)  # Check every minute
-        except asyncio.CancelledError:
-            logging.info("[nudge] Nudge loop cancelled, shutting down.")
-            raise
-        except Exception as e:
-            logging.error(f"[nudge] Unexpected error in nudge loop: {e}", exc_info=True)
-            await asyncio.sleep(NUDGE_CHECK_INTERVAL)  # Sleep before retry
+
+    await run_nudge_loop(
+        force=force,
+        force_chat_id=force_chat_id,
+        force_message=force_message,
+        ask_agent=ask_agent,
+        clean_openai_reply=clean_openai_reply,
+        mark_bot_replied=mark_bot_replied,
+        send_nudge_with_image=send_nudge_with_image,
+        bot=bot,
+        bot_username=BOT_USERNAME,
+        bot_timezone=BOT_TIMEZONE,
+        active_start=ACTIVE_START,
+        active_end=ACTIVE_END,
+        nudge_minutes=NUDGE_MINUTES,
+        nudge_enabled_chats=NUDGE_ENABLED_CHATS,
+        nudge_reset_interval=NUDGE_RESET_INTERVAL,
+        nudge_check_interval=NUDGE_CHECK_INTERVAL,
+        last_activity_time=last_activity_time,
+        nudge_loop_started_at_ref=nudge_started_ref,
+        bot_unmentioned_count=bot_unmentioned_count,
+        get_nudge_prompt_for_chat=_get_nudge_prompt,
+    )
 
 
 def mark_bot_replied(chat_id):
@@ -1109,33 +686,6 @@ def clean_openai_reply(text: str) -> str:
     return re.sub(pattern, "", text).strip()
 
 
-def get_random_nudge_prompt():
-    """Return a random nudge prompt from the predefined list, avoiding recent repeats."""
-    global nudge_prompt_history
-    available_prompts = [
-        p for p in NUDGE_SYSTEM_PROMPTS if p not in nudge_prompt_history
-    ]
-    if not available_prompts:
-        # If all prompts are in history, reset history except the last one
-        nudge_prompt_history = nudge_prompt_history[-1:]
-        available_prompts = [
-            p for p in NUDGE_SYSTEM_PROMPTS if p not in nudge_prompt_history
-        ]
-    prompt = random.choice(available_prompts)
-    nudge_prompt_history.append(prompt)
-    if len(nudge_prompt_history) > NUDGE_PROMPT_HISTORY_LEN:
-        nudge_prompt_history = nudge_prompt_history[-NUDGE_PROMPT_HISTORY_LEN:]
-    return prompt
-
-
-def get_nudge_prompt(chat_id: int) -> str:
-    """Return the first nudge during the morning window, otherwise random."""
-    now = datetime.now(BOT_TIMEZONE).time()
-    if FIRST_NUDGE_ENABLED and FIRST_NUDGE_START <= now < FIRST_NUDGE_END:
-        return FIRST_NUDGE_PROMPT
-    return get_random_nudge_prompt()
-
-
 def load_system_prompt() -> str:
     """Return the full contents of the system prompt file."""
     if not os.path.exists(SYSTEM_PROMPT_FILE):
@@ -1147,29 +697,13 @@ def load_system_prompt() -> str:
 # History loading and scheduled summarization removed - now handled by agent_client
 
 
-def _cleanup_old_claims(max_age: int = 300):
-    """Remove claim files older than ``max_age`` seconds."""
-    import time as _time
-    now = _time.time()
-    try:
-        for name in os.listdir(CLAIM_DIR):
-            path = os.path.join(CLAIM_DIR, name)
-            try:
-                if os.path.getmtime(path) < (now - max_age):
-                    os.remove(path)
-            except OSError:
-                pass
-    except OSError:
-        pass
-
-
 async def periodic_history_save():
     """Periodically save chat histories to disk."""
     try:
         while True:
             await asyncio.sleep(300)  # Save every 5 minutes
             agent_client.save_histories_to_disk()
-            _cleanup_old_claims()
+            cleanup_old_claims()
             # Trim bot bus files
             for chat_id in list(_bus_positions.keys()):
                 bot_bus.trim(chat_id)
@@ -1177,105 +711,6 @@ async def periodic_history_save():
         logging.info("[history_save] Cancelled, saving before exit.")
         agent_client.save_histories_to_disk()
         raise
-
-
-async def poll_bot_bus():
-    """Poll the bot bus for messages from other bots."""
-    mention_tag = f"@{BOT_USERNAME}".lower()
-    bare_username = BOT_USERNAME.lower()
-    while True:
-        try:
-            # Discover chat files in the bus directory
-            try:
-                files = os.listdir(bot_bus.BOT_BUS_DIR)
-            except FileNotFoundError:
-                await asyncio.sleep(BOT_BUS_POLL_INTERVAL)
-                continue
-
-            for fname in files:
-                if not fname.endswith(".jsonl"):
-                    continue
-                try:
-                    chat_id = int(fname[:-6])  # strip .jsonl
-                except ValueError:
-                    continue
-
-                last_pos = _bus_positions.get(chat_id, 0)
-                messages, new_pos = bot_bus.poll(chat_id, BOT_USERNAME, last_pos)
-                _bus_positions[chat_id] = new_pos
-
-                import time as _time
-
-                for msg in messages:
-                    other_bot = msg.get("bot", "")
-                    text = msg.get("text", "")
-                    if not text:
-                        continue
-
-                    # Always inject into history so the bot knows what was said
-                    inject_external_message(chat_id, other_bot, text)
-
-                    # Reset nudge timer — another bot's message counts as activity
-                    last_activity_time[chat_id] = datetime.now()
-
-                    # Check if this bot is mentioned (@username, bare username, or name patterns)
-                    # Note: via_bus messages are allowed through if we're explicitly mentioned —
-                    # the cooldown below prevents runaway loops.
-                    text_lower = text.lower()
-                    mentioned = (
-                        mention_tag in text_lower
-                        or bare_username in text_lower
-                        or (
-                            NAME_MENTION_RE is not None
-                            and bool(NAME_MENTION_RE.search(text))
-                        )
-                    )
-
-                    if not mentioned:
-                        continue
-
-                    # Per-chat cooldown to prevent rapid back-and-forth
-                    now_ts = _time.time()
-                    last_reply_ts = _bus_last_reply.get(chat_id, 0)
-                    if now_ts - last_reply_ts < BOT_BUS_REPLY_COOLDOWN:
-                        logging.info(
-                            f"[bot_bus] Skipping reply in chat {chat_id} — cooldown"
-                        )
-                        continue
-
-                    logging.info(
-                        f"[bot_bus] Bot {other_bot} mentioned us in chat {chat_id}"
-                    )
-                    prompt = re.sub(
-                        re.escape(mention_tag), "", text,
-                        count=1, flags=re.IGNORECASE,
-                    ).strip()
-                    answer = await ask_openai(
-                        prompt, username=other_bot, chat_id=chat_id
-                    )
-                    if answer:
-                        try:
-                            await bot.send_message(
-                                chat_id, answer, parse_mode=ParseMode.HTML
-                            )
-                        except Exception as e:
-                            logging.error(
-                                f"[bot_bus] Failed to send reply to {chat_id}: {e}"
-                            )
-                        mark_bot_replied(chat_id)
-                        _bus_last_reply[chat_id] = _time.time()
-                        # Mark as via_bus so other bots won't chain off this
-                        bot_bus.broadcast(
-                            chat_id, BOT_USERNAME, answer, via_bus=True
-                        )
-
-            await asyncio.sleep(BOT_BUS_POLL_INTERVAL)
-        except asyncio.CancelledError:
-            logging.info("[bot_bus] Poll loop cancelled.")
-            raise
-        except Exception as e:
-            logging.error(f"[bot_bus] Error in poll loop: {e}", exc_info=True)
-            await asyncio.sleep(BOT_BUS_POLL_INTERVAL)
 
 
 async def startup() -> None:
@@ -1290,26 +725,25 @@ async def startup() -> None:
         await create_thread_with_system_prompt(system_prompt, BOT_USERNAME)
 
     # Initialize bot bus for inter-bot communication
-    bot_bus.init_bus()
-
-    # Seek bus positions to end of existing files so we don't replay old messages
-    try:
-        for fname in os.listdir(bot_bus.BOT_BUS_DIR):
-            if not fname.endswith(".jsonl"):
-                continue
-            try:
-                chat_id = int(fname[:-6])
-            except ValueError:
-                continue
-            path = os.path.join(bot_bus.BOT_BUS_DIR, fname)
-            _bus_positions[chat_id] = os.path.getsize(path)
-    except FileNotFoundError:
-        pass
+    initialize_bus_positions(_bus_positions)
 
     # Start background tasks
     asyncio.create_task(nudge_inactive_chats())
     asyncio.create_task(periodic_history_save())
-    asyncio.create_task(poll_bot_bus())
+    asyncio.create_task(
+        poll_bot_bus(
+            bot=bot,
+            bot_username=BOT_USERNAME,
+            bus_positions=_bus_positions,
+            bus_last_reply=_bus_last_reply,
+            last_activity_time=last_activity_time,
+            name_mention_re=NAME_MENTION_RE,
+            inject_external_message=inject_external_message,
+            ask_openai=ask_openai,
+            mark_bot_replied=mark_bot_replied,
+            parse_mode=ParseMode.HTML,
+        )
+    )
 
     await dp.start_polling(bot)
 
