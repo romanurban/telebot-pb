@@ -1218,11 +1218,9 @@ async def poll_bot_bus():
                     # Reset nudge timer — another bot's message counts as activity
                     last_activity_time[chat_id] = datetime.now()
 
-                    # Don't respond to messages that were themselves bus-triggered
-                    if msg.get("via_bus"):
-                        continue
-
                     # Check if this bot is mentioned (@username, bare username, or name patterns)
+                    # Note: via_bus messages are allowed through if we're explicitly mentioned —
+                    # the cooldown below prevents runaway loops.
                     text_lower = text.lower()
                     mentioned = (
                         mention_tag in text_lower
