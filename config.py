@@ -19,9 +19,13 @@ SYSTEM_PROMPT_FILE = os.path.join("prompts", BOT_USERNAME, "system_prompt.yaml")
 BOT_PROMPTS_FILE = os.path.join("prompts", BOT_USERNAME, "bot_prompts.yaml")
 DEFAULT_BOT_PROMPTS_FILE = os.path.join("prompts", "default_bot", "bot_prompts.yaml")
 
-NUDGE_MINUTES = int(os.getenv("NUDGE_MINUTES", 120))
-NUDGE_RANDOM_OFFSET = random.choice([-1, 1]) * random.randint(20, 30)
-NUDGE_MINUTES = max(30, NUDGE_MINUTES + NUDGE_RANDOM_OFFSET)
+_NUDGE_MINUTES_BASE = int(os.getenv("NUDGE_MINUTES", 120))
+
+
+def get_nudge_minutes() -> int:
+    """Return nudge interval with a fresh random offset each call."""
+    offset = random.choice([-1, 1]) * random.randint(20, 30)
+    return max(30, _NUDGE_MINUTES_BASE + offset)
 
 IMAGE_GEN_MODEL = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8888/sse")

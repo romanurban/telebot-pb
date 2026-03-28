@@ -54,6 +54,7 @@ async def test_nudge_inactive_chat(monkeypatch):
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    monkeypatch.setattr(main, 'get_nudge_minutes', lambda: main.NUDGE_MINUTES)
     import state
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
@@ -74,6 +75,7 @@ async def test_nudge_inactive_chat(monkeypatch):
 
     import nudge as nudge_module
     monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
+    monkeypatch.setattr(nudge_module, 'try_claim_nudge', lambda chat_id, bot_username: True)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -180,6 +182,7 @@ async def test_nudge_blocked_during_startup_grace(monkeypatch):
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    monkeypatch.setattr(main, 'get_nudge_minutes', lambda: main.NUDGE_MINUTES)
     chat_id = 100
     now = main.datetime.now()
     # Activity was long ago but startup was just now
@@ -202,6 +205,7 @@ async def test_nudge_blocked_during_startup_grace(monkeypatch):
 
     import nudge as nudge_module
     monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
+    monkeypatch.setattr(nudge_module, 'try_claim_nudge', lambda chat_id, bot_username: True)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -223,6 +227,7 @@ async def test_nudge_allowed_after_startup_grace(monkeypatch):
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    monkeypatch.setattr(main, 'get_nudge_minutes', lambda: main.NUDGE_MINUTES)
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
     main.last_activity_time[chat_id] = past
@@ -243,6 +248,7 @@ async def test_nudge_allowed_after_startup_grace(monkeypatch):
 
     import nudge as nudge_module
     monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
+    monkeypatch.setattr(nudge_module, 'try_claim_nudge', lambda chat_id, bot_username: True)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -263,6 +269,7 @@ async def test_automatic_nudge_clears_history(monkeypatch):
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    monkeypatch.setattr(main, 'get_nudge_minutes', lambda: main.NUDGE_MINUTES)
     import state
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
@@ -303,6 +310,7 @@ async def test_automatic_nudge_clears_history(monkeypatch):
 
     import nudge as nudge_module
     monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
+    monkeypatch.setattr(nudge_module, 'try_claim_nudge', lambda chat_id, bot_username: True)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -390,6 +398,7 @@ async def test_nudge_skipped_when_bus_has_recent_activity(monkeypatch):
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    monkeypatch.setattr(main, 'get_nudge_minutes', lambda: main.NUDGE_MINUTES)
     import state
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
@@ -410,6 +419,7 @@ async def test_nudge_skipped_when_bus_has_recent_activity(monkeypatch):
 
     import nudge as nudge_module
     monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
+    monkeypatch.setattr(nudge_module, 'try_claim_nudge', lambda chat_id, bot_username: True)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -432,6 +442,7 @@ async def test_nudge_allowed_when_bus_activity_expired(monkeypatch):
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
+    monkeypatch.setattr(main, 'get_nudge_minutes', lambda: main.NUDGE_MINUTES)
     import state
     chat_id = 100
     past = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 1)
@@ -456,6 +467,7 @@ async def test_nudge_allowed_when_bus_activity_expired(monkeypatch):
 
     import nudge as nudge_module
     monkeypatch.setattr(nudge_module.asyncio, 'sleep', fake_sleep)
+    monkeypatch.setattr(nudge_module, 'try_claim_nudge', lambda chat_id, bot_username: True)
 
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
@@ -477,3 +489,13 @@ async def test_nudge_enabled_chats_always_in_all_chats(monkeypatch):
     all_chats = set(agent_client._histories.keys()) | set(main.last_activity_time.keys()) | main.NUDGE_ENABLED_CHATS
     assert 200 in all_chats
     assert 300 in all_chats
+
+
+def test_get_nudge_minutes_varies():
+    """get_nudge_minutes should return different values across calls (randomized)."""
+    from config import get_nudge_minutes
+    values = {get_nudge_minutes() for _ in range(50)}
+    # With base=120 and offset in ±[20,30], we should see multiple distinct values
+    assert len(values) > 1
+    for v in values:
+        assert v >= 30  # min clamp

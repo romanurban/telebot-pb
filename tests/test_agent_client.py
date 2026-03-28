@@ -206,3 +206,62 @@ def test_clear_history_nonexistent():
     # Should not raise
     agent_client.clear_history(999)
     assert 999 not in agent_client._histories
+
+
+@pytest.mark.asyncio
+async def test_image_message_stores_text_summary(monkeypatch):
+    """Image messages should store the text prompt in history, not be skipped."""
+    monkeypatch.setenv("MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client, "MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client.MCPServerSse, "connect", AsyncMock())
+    await agent_client.create_thread_with_system_prompt("sys", bot_name="bot")
+
+    fake_result = Mock(final_output="nice photo")
+    run_mock = AsyncMock(return_value=fake_result)
+    monkeypatch.setattr(agent_client.Runner, "run", run_mock)
+
+    contents = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "What is in this image?"},
+                {"type": "input_image", "file_id": "file-abc123"},
+            ],
+        }
+    ]
+    reply = await agent_client.ask_agent(contents, chat_id=50)
+
+    assert reply == "nice photo"
+    # History should contain a text-only summary, not be empty
+    history = agent_client._histories[50]
+    assert len(history) == 2  # user summary + assistant reply
+    assert history[0]["role"] == "user"
+    assert "What is in this image?" in history[0]["content"]
+    assert "file_id" not in str(history[0]["content"])  # no image reference
+
+
+@pytest.mark.asyncio
+async def test_image_message_without_text_uses_placeholder(monkeypatch):
+    """Image-only messages (no text) should store a placeholder in history."""
+    monkeypatch.setenv("MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client, "MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client.MCPServerSse, "connect", AsyncMock())
+    await agent_client.create_thread_with_system_prompt("sys", bot_name="bot")
+
+    fake_result = Mock(final_output="interesting")
+    run_mock = AsyncMock(return_value=fake_result)
+    monkeypatch.setattr(agent_client.Runner, "run", run_mock)
+
+    contents = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "file_id": "file-xyz"},
+            ],
+        }
+    ]
+    await agent_client.ask_agent(contents, chat_id=51)
+
+    history = agent_client._histories[51]
+    assert history[0]["role"] == "user"
+    assert history[0]["content"] == "[user sent a photo]"

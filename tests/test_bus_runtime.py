@@ -145,3 +145,44 @@ async def test_poll_bot_bus_skips_via_bus_non_mentions(monkeypatch):
         )
 
     fake_bot.send_message.assert_not_awaited()
+
+
+def test_initialize_bus_positions_partial_line(monkeypatch, tmp_path):
+    """Position should align to end of last complete line, ignoring partial writes."""
+    bus_dir = tmp_path / 'bus'
+    bus_dir.mkdir()
+    p = bus_dir / '100.jsonl'
+    complete_line = '{"bot":"a","text":"x"}\n'
+    partial_line = '{"bot":"b","text":"incomp'
+    p.write_text(complete_line + partial_line, encoding='utf-8')
+
+    monkeypatch.setattr(bot_bus, 'BOT_BUS_DIR', str(bus_dir))
+    positions = {}
+
+    bus_runtime.initialize_bus_positions(positions)
+
+    # Should point to end of the complete line, not the partial one
+    assert positions[100] == len(complete_line.encode('utf-8'))
+
+
+def test_initialize_bus_positions_complete_file(monkeypatch, tmp_path):
+    """Position should equal file size when file ends with newline."""
+    bus_dir = tmp_path / 'bus'
+    bus_dir.mkdir()
+    p = bus_dir / '200.jsonl'
+    content = '{"bot":"a","text":"x"}\n{"bot":"b","text":"y"}\n'
+    p.write_text(content, encoding='utf-8')
+
+    monkeypatch.setattr(bot_bus, 'BOT_BUS_DIR', str(bus_dir))
+    positions = {}
+
+    bus_runtime.initialize_bus_positions(positions)
+
+    assert positions[200] == p.stat().st_size
+
+
+def test_line_aligned_size_empty_file(tmp_path):
+    """Empty file should return position 0."""
+    p = tmp_path / 'empty.jsonl'
+    p.write_text('', encoding='utf-8')
+    assert bus_runtime._line_aligned_size(str(p)) == 0

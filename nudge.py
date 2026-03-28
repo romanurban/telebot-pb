@@ -5,6 +5,7 @@ from datetime import datetime
 
 import agent_client
 import bot_bus
+from claims import try_claim_nudge
 
 
 def get_random_nudge_prompt(nudge_system_prompts, nudge_prompt_history, history_len):
@@ -55,7 +56,7 @@ async def nudge_inactive_chats(
     bot_timezone,
     active_start,
     active_end,
-    nudge_minutes,
+    get_nudge_minutes,
     nudge_enabled_chats,
     nudge_reset_interval,
     nudge_check_interval,
@@ -80,7 +81,7 @@ async def nudge_inactive_chats(
         nudge_loop_started_at_ref[0] = datetime.now()
     logging.info(
         f"[nudge] Starting nudge loop. NUDGE_ENABLED_CHATS={nudge_enabled_chats}, "
-        f"NUDGE_MINUTES={nudge_minutes}, Active hours: {active_start}-{active_end} {bot_timezone}"
+        f"NUDGE_MINUTES=dynamic, Active hours: {active_start}-{active_end} {bot_timezone}"
     )
 
     while True:
@@ -90,6 +91,8 @@ async def nudge_inactive_chats(
                 logging.info(f"[nudge] Outside active hours (current: {current_time}), sleeping...")
                 await asyncio.sleep(nudge_check_interval)
                 continue
+
+            nudge_minutes = get_nudge_minutes()
 
             now = datetime.now()
             if (now - last_reset).total_seconds() >= nudge_reset_interval:
@@ -126,6 +129,9 @@ async def nudge_inactive_chats(
                     bus_age_min = (_time.time() - last_bus_ts) / 60
                     if bus_age_min < nudge_minutes:
                         continue
+
+                if not try_claim_nudge(chat_id, bot_username):
+                    continue
 
                 try:
                     agent_client.clear_history(chat_id)

@@ -12,8 +12,32 @@ BOT_BUS_POLL_INTERVAL = 3
 BOT_BUS_REPLY_COOLDOWN = 60
 
 
+def _line_aligned_size(path: str) -> int:
+    """Return the byte offset of the end of the last complete line in *path*.
+
+    If the file ends with a newline (the normal case for JSONL), this equals
+    the file size.  If a concurrent writer appended a partial line, we back
+    up so the next poll starts at a full line boundary.
+    """
+    size = os.path.getsize(path)
+    if size == 0:
+        return 0
+    with open(path, "rb") as f:
+        f.seek(size - 1)
+        if f.read(1) == b"\n":
+            return size
+        # Last line is incomplete — scan backwards for the previous newline.
+        pos = size - 2
+        while pos >= 0:
+            f.seek(pos)
+            if f.read(1) == b"\n":
+                return pos + 1
+            pos -= 1
+    return 0
+
+
 def initialize_bus_positions(bus_positions: dict[int, int]) -> None:
-    """Initialize bot bus and seek existing files to EOF."""
+    """Initialize bot bus and seek existing files to end of last complete line."""
     bot_bus.init_bus()
     try:
         for fname in os.listdir(bot_bus.BOT_BUS_DIR):
@@ -24,7 +48,7 @@ def initialize_bus_positions(bus_positions: dict[int, int]) -> None:
             except ValueError:
                 continue
             path = os.path.join(bot_bus.BOT_BUS_DIR, fname)
-            bus_positions[chat_id] = os.path.getsize(path)
+            bus_positions[chat_id] = _line_aligned_size(path)
     except FileNotFoundError:
         pass
 
