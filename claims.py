@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import time as _time
+from datetime import datetime
 
 from aiogram.types import Message, ReactionTypeEmoji
 
@@ -19,6 +20,12 @@ def claim_key(message: Message) -> str:
     text = message.text or message.caption or ""
     content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
     return f"{chat_id}_{user_id}_{date}_{content_hash}"
+
+
+def nudge_claim_key(chat_id: int, now: datetime | None = None) -> str:
+    """Build a per-chat, per-day key for the first daily nudge lock."""
+    day = (now or datetime.now()).strftime("%Y-%m-%d")
+    return f"nudge_{chat_id}_{day}"
 
 
 async def try_claim_message(bot, bot_username: str, message: Message, emoji: str = "👀") -> bool:
@@ -49,6 +56,22 @@ async def try_claim_message(bot, bot_username: str, message: Message, emoji: str
         pass
 
     return True
+
+
+def try_claim_nudge(chat_id: int, bot_username: str, now: datetime | None = None) -> bool:
+    """Atomically claim the first daily nudge for a chat."""
+    key = nudge_claim_key(chat_id, now=now)
+    claim_path = os.path.join(CLAIM_DIR, key)
+    logging.info(f"[nudge-claim] {bot_username} trying to claim key={key}")
+    try:
+        fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, bot_username.encode())
+        os.close(fd)
+        logging.info(f"[nudge-claim] {bot_username} WON claim for key={key}")
+        return True
+    except FileExistsError:
+        logging.info(f"[nudge-claim] {bot_username} LOST claim for key={key}")
+        return False
 
 
 def cleanup_old_claims(max_age: int = 300):
