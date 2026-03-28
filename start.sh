@@ -46,6 +46,21 @@ shift
 
 # --- Process management helpers ---
 
+# Wait until a TCP port is accepting connections, or give up.
+wait_for_port() {
+    local port="$1" timeout="${2:-15}" elapsed=0
+    echo "Waiting for port $port..."
+    while ! (echo >/dev/tcp/127.0.0.1/"$port") 2>/dev/null; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if [[ "$elapsed" -ge "$timeout" ]]; then
+            echo "Warning: port $port not ready after ${timeout}s" >&2
+            return 1
+        fi
+    done
+    echo "Port $port is ready."
+}
+
 # Recursively kill a process and all its descendants (depth-first).
 kill_tree() {
     local pid="$1" sig="${2:-TERM}"
@@ -101,7 +116,7 @@ start_session() {
     else
         mkdir -p "$PID_DIR"
         echo "Starting '$name' (background)"
-        $run_cmd >> "$PID_DIR/$name.log" 2>&1 &
+        bash -c "exec $run_cmd" >> "$PID_DIR/$name.log" 2>&1 &
         local pid=$!
         echo "$pid" > "$PID_DIR/$name.pid"
         echo "  pid $pid, log: $PID_DIR/$name.log"
@@ -166,8 +181,9 @@ if [[ "$TARGET" == "all" ]]; then
     # Start MCP (restart to pick up code changes)
     NO_ATTACH=true "$0" mcp restart
 
-    # Give MCP a moment to bind its port
-    sleep 2
+    # Wait for MCP to be ready before starting bots
+    MCP_PORT="${MCP_PORT:-8888}"
+    wait_for_port "$MCP_PORT" 15
 
     # Start each configured bot (detached / background)
     bots=$(configured_bots)
@@ -212,12 +228,12 @@ if [[ "$TARGET" == "autoupdate" ]]; then
                     stop_session "$sess"
                 done
 
-                # Start MCP first, then bots after a delay
+                # Start MCP first, then wait for readiness before bots
                 for sess in $sessions; do
                     target="${sess#telebot-}"
                     if [[ "$target" == "mcp" ]]; then
                         NO_ATTACH=true "$0" "$target" start
-                        sleep 2
+                        wait_for_port "${MCP_PORT:-8888}" 15
                     fi
                 done
                 for sess in $sessions; do
