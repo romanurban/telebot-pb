@@ -265,3 +265,135 @@ async def test_image_message_without_text_uses_placeholder(monkeypatch):
     history = agent_client._histories[51]
     assert history[0]["role"] == "user"
     assert history[0]["content"] == "[user sent a photo]"
+
+
+@pytest.mark.asyncio
+async def test_mcp_reconnect_on_runner_failure(monkeypatch):
+    """ask_agent should reconnect MCP and retry once if Runner.run fails."""
+    monkeypatch.setenv("MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client, "MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client.MCPServerSse, "connect", AsyncMock())
+    await agent_client.create_thread_with_system_prompt("sys", bot_name="bot")
+
+    # First call fails, second succeeds (simulates reconnect recovery)
+    fake_result = Mock(final_output="recovered")
+    call_count = 0
+
+    async def run_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ConnectionError("SSE stream dead")
+        return fake_result
+
+    monkeypatch.setattr(agent_client.Runner, "run", run_side_effect)
+    cleanup_mock = AsyncMock()
+    connect_mock = AsyncMock()
+    monkeypatch.setattr(agent_client._mcp_server, "cleanup", cleanup_mock)
+    monkeypatch.setattr(agent_client._mcp_server, "connect", connect_mock)
+
+    reply = await agent_client.ask_agent(
+        [{"role": "user", "content": "hello"}], chat_id=60
+    )
+
+    assert reply == "recovered"
+    assert call_count == 2
+    cleanup_mock.assert_awaited_once()
+    connect_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mcp_reconnect_preserves_history_on_retry(monkeypatch):
+    """History should be correct after a reconnect-retry cycle."""
+    monkeypatch.setenv("MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client, "MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client.MCPServerSse, "connect", AsyncMock())
+    await agent_client.create_thread_with_system_prompt("sys", bot_name="bot")
+
+    call_count = 0
+
+    async def run_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ConnectionError("dead")
+        return Mock(final_output="ok")
+
+    monkeypatch.setattr(agent_client.Runner, "run", run_side_effect)
+    monkeypatch.setattr(agent_client._mcp_server, "cleanup", AsyncMock())
+    monkeypatch.setattr(agent_client._mcp_server, "connect", AsyncMock())
+
+    await agent_client.ask_agent(
+        [{"role": "user", "content": "test msg"}], chat_id=61
+    )
+
+    history = agent_client._histories[61]
+    # User message + assistant reply, no duplicates from retry
+    assert len(history) == 2
+    assert history[0] == {"role": "user", "content": "test msg"}
+    assert history[1] == {"role": "assistant", "content": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_reconnect_raises_on_second_failure(monkeypatch):
+    """If retry also fails, the error should propagate."""
+    monkeypatch.setenv("MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client, "MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client.MCPServerSse, "connect", AsyncMock())
+    await agent_client.create_thread_with_system_prompt("sys", bot_name="bot")
+
+    monkeypatch.setattr(
+        agent_client.Runner, "run", AsyncMock(side_effect=ConnectionError("still dead"))
+    )
+    monkeypatch.setattr(agent_client._mcp_server, "cleanup", AsyncMock())
+    monkeypatch.setattr(agent_client._mcp_server, "connect", AsyncMock())
+
+    with pytest.raises(ConnectionError, match="still dead"):
+        await agent_client.ask_agent(
+            [{"role": "user", "content": "hello"}], chat_id=62
+        )
+
+
+@pytest.mark.asyncio
+async def test_mcp_cleanup_failure_does_not_block_reconnect(monkeypatch):
+    """If cleanup raises, connect should still be attempted."""
+    monkeypatch.setenv("MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client, "MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client.MCPServerSse, "connect", AsyncMock())
+    await agent_client.create_thread_with_system_prompt("sys", bot_name="bot")
+
+    call_count = 0
+
+    async def run_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ConnectionError("dead")
+        return Mock(final_output="ok")
+
+    monkeypatch.setattr(agent_client.Runner, "run", run_side_effect)
+    monkeypatch.setattr(
+        agent_client._mcp_server, "cleanup", AsyncMock(side_effect=RuntimeError("cleanup boom"))
+    )
+    connect_mock = AsyncMock()
+    monkeypatch.setattr(agent_client._mcp_server, "connect", connect_mock)
+
+    reply = await agent_client.ask_agent(
+        [{"role": "user", "content": "hi"}], chat_id=63
+    )
+
+    assert reply == "ok"
+    connect_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_timeout_params(monkeypatch):
+    """MCPServerSse should be created with extended timeouts."""
+    monkeypatch.setenv("MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client, "MCP_SERVER_URL", "http://example.com/sse")
+    monkeypatch.setattr(agent_client.MCPServerSse, "connect", AsyncMock())
+    await agent_client.create_thread_with_system_prompt("sys", bot_name="bot")
+
+    server = agent_client._mcp_server
+    assert server.params["sse_read_timeout"] == 60 * 30
+    assert server.client_session_timeout_seconds == 30

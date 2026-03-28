@@ -119,7 +119,10 @@ async def create_thread_with_system_prompt(
     global _agent, _system_history, _histories, _mcp_server
     if bot_name is None:
         bot_name = os.getenv("BOT_USERNAME", "telebot")
-    _mcp_server = MCPServerSse({"url": MCP_SERVER_URL})
+    _mcp_server = MCPServerSse(
+        params={"url": MCP_SERVER_URL, "sse_read_timeout": 60 * 30},
+        client_session_timeout_seconds=30,
+    )
     await _mcp_server.connect()
     _agent = Agent(
         name=bot_name,
@@ -175,7 +178,18 @@ async def ask_agent(contents: list[dict], chat_id: int, *, tool_choice: str | No
     if tool_choice:
         run_cfg_kwargs["model_settings"] = ModelSettings(tool_choice=tool_choice)
     run_cfg = RunConfig(**run_cfg_kwargs) if run_cfg_kwargs else None
-    result = await Runner.run(_agent, api_history, run_config=run_cfg)
+    try:
+        result = await Runner.run(_agent, api_history, run_config=run_cfg)
+    except Exception as first_err:
+        if _mcp_server is None:
+            raise
+        print(f"[ask_agent] Chat {chat_id}: Runner failed ({first_err!r}), reconnecting MCP...")
+        try:
+            await _mcp_server.cleanup()
+        except Exception:
+            pass
+        await _mcp_server.connect()
+        result = await Runner.run(_agent, api_history, run_config=run_cfg)
 
     reply = str(result.final_output)
 
