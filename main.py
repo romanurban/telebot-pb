@@ -777,8 +777,16 @@ async def startup() -> None:
             name_mention_re=NAME_MENTION_RE,
             inject_external_message=inject_external_message,
             ask_openai=ask_openai,
+            ask_agent=ask_agent,
+            clean_openai_reply=clean_openai_reply,
             mark_bot_replied=mark_bot_replied,
             parse_mode=ParseMode.HTML,
+            messages_since_bot_reply=messages_since_bot_reply,
+            bot_unmentioned_count=bot_unmentioned_count,
+            last_bot_reply_time=last_bot_reply_time,
+            max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
+            recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
+            chat_react_prompt=CHAT_REACT_PROMPT,
         )
     )
 
