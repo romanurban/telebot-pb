@@ -6,6 +6,7 @@ from datetime import datetime
 import agent_client
 import bot_bus
 from claims import try_claim_nudge
+from message_filter import clean_self_mentions, validate_bot_interaction
 
 
 def get_random_nudge_prompt(nudge_system_prompts, nudge_prompt_history, history_len):
@@ -139,6 +140,13 @@ async def nudge_inactive_chats(
                     message_list = [{"role": "system", "content": system_prompt}]
                     raw_answer = await ask_agent(message_list, chat_id=chat_id)
                     answer = clean_openai_reply(raw_answer)
+                    
+                    # Clean self-mentions and validate
+                    answer = clean_self_mentions(answer, bot_username)
+                    if not validate_bot_interaction(answer, bot_username):
+                        logging.info(f"[nudge] Skipping invalid message in chat {chat_id}")
+                        continue
+                        
                     mark_bot_replied(chat_id)
                     await send_nudge_with_image(bot, chat_id, answer, caption="", is_message=False)
                     if answer:

@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 
 import bot_bus
+from message_filter import clean_self_mentions, validate_bot_interaction
 
 
 BOT_BUS_POLL_INTERVAL = 3
@@ -155,13 +156,16 @@ async def poll_bot_bus(
                         ).strip()
                         answer = await ask_openai(prompt, username=other_bot, chat_id=chat_id)
                         if answer:
-                            try:
-                                await bot.send_message(chat_id, answer, parse_mode=parse_mode)
-                            except Exception as e:
-                                logging.error(f"[bot_bus] Failed to send reply to {chat_id}: {e}")
-                            mark_bot_replied(chat_id)
-                            bus_last_reply[chat_id] = _time.time()
-                            bot_bus.broadcast(chat_id, bot_username, answer, via_bus=True)
+                            # Clean self-mentions and validate
+                            answer = clean_self_mentions(answer, bot_username)
+                            if validate_bot_interaction(answer, bot_username):
+                                try:
+                                    await bot.send_message(chat_id, answer, parse_mode=parse_mode)
+                                except Exception as e:
+                                    logging.error(f"[bot_bus] Failed to send reply to {chat_id}: {e}")
+                                mark_bot_replied(chat_id)
+                                bus_last_reply[chat_id] = _time.time()
+                                bot_bus.broadcast(chat_id, bot_username, answer, via_bus=True)
                         continue
 
                     # Check if this is a nudge (message not via_bus = fresh nudge)
@@ -194,13 +198,16 @@ async def poll_bot_bus(
                     raw_answer = await ask_agent(message_list, chat_id=chat_id)
                     answer = clean_openai_reply(raw_answer)
                     if answer:
-                        try:
-                            await bot.send_message(chat_id, answer, parse_mode=parse_mode)
-                        except Exception as e:
-                            logging.error(f"[bot_bus] Failed to send probabilistic reply to {chat_id}: {e}")
-                        mark_bot_replied(chat_id)
-                        bus_last_reply[chat_id] = _time.time()
-                        bot_bus.broadcast(chat_id, bot_username, answer, via_bus=True)
+                        # Clean self-mentions and validate
+                        answer = clean_self_mentions(answer, bot_username)
+                        if validate_bot_interaction(answer, bot_username):
+                            try:
+                                await bot.send_message(chat_id, answer, parse_mode=parse_mode)
+                            except Exception as e:
+                                logging.error(f"[bot_bus] Failed to send probabilistic reply to {chat_id}: {e}")
+                            mark_bot_replied(chat_id)
+                            bus_last_reply[chat_id] = _time.time()
+                            bot_bus.broadcast(chat_id, bot_username, answer, via_bus=True)
 
             await asyncio.sleep(BOT_BUS_POLL_INTERVAL)
         except asyncio.CancelledError:
