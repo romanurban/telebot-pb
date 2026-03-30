@@ -53,7 +53,11 @@ def initialize_bus_positions(bus_positions: dict[int, int]) -> None:
         pass
 
 
-def _should_probabilistic_reply(messages_since_bot_reply: int, had_recent_bot_reply: bool) -> bool:
+def _should_probabilistic_reply(messages_since_bot_reply: int, had_recent_bot_reply: bool, is_nudge: bool = False) -> bool:
+    # Always reply to nudges to start conversations
+    if is_nudge:
+        return True
+    
     if had_recent_bot_reply:
         return True
     if messages_since_bot_reply <= 0:
@@ -137,8 +141,10 @@ async def poll_bot_bus(
 
                     now_ts = _time.time()
                     last_reply_ts = bus_last_reply.get(chat_id, 0)
-                    if now_ts - last_reply_ts < BOT_BUS_REPLY_COOLDOWN:
-                        logging.info(f"[bot_bus] Skipping reply in chat {chat_id} — cooldown")
+                    # Shorter cooldown for nudges to encourage conversation
+                    cooldown = BOT_BUS_REPLY_COOLDOWN // 3 if not via_bus else BOT_BUS_REPLY_COOLDOWN
+                    if now_ts - last_reply_ts < cooldown:
+                        logging.info(f"[bot_bus] Skipping reply in chat {chat_id} — cooldown (using {cooldown}s)")
                         continue
 
                     if mentioned:
@@ -158,11 +164,16 @@ async def poll_bot_bus(
                             bot_bus.broadcast(chat_id, bot_username, answer, via_bus=True)
                         continue
 
+                    # Check if this is a nudge (message not via_bus = fresh nudge)
+                    is_nudge = not via_bus
+                    
                     if via_bus:
                         continue
 
                     bot_unmentioned = bot_unmentioned_count.get(chat_id, 0)
-                    if bot_unmentioned >= max_unmentioned_replies:
+                    # For nudges, allow more replies to get conversation started
+                    reply_limit = max_unmentioned_replies * 2 if is_nudge else max_unmentioned_replies
+                    if bot_unmentioned >= reply_limit:
                         continue
 
                     recent_reply = False
@@ -171,7 +182,7 @@ async def poll_bot_bus(
                         recent_reply = True
 
                     non_bot_count = messages_since_bot_reply.get(chat_id, 0)
-                    if not _should_probabilistic_reply(non_bot_count, recent_reply):
+                    if not _should_probabilistic_reply(non_bot_count, recent_reply, is_nudge):
                         continue
 
                     bot_unmentioned_count[chat_id] = bot_unmentioned + 1
