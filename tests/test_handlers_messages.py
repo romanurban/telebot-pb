@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.join(__file__, '..'))))
 
+from bot_context import BotContext
 from handlers.messages import handle_text_message
 
 
@@ -43,28 +44,15 @@ class FakeMessage:
         self.replies.append(caption or '<photo>')
 
 
-@pytest.mark.asyncio
-async def test_direct_mention_replies():
-    msg = FakeMessage('@testbot hello')
-    last_activity_time = {}
-    messages_since_bot_reply = {}
-    bot_unmentioned_count = {}
-    last_bot_reply_time = {}
-    marks = []
-    broadcasts = []
-
-    await handle_text_message(
-        msg,
+def _make_ctx(**overrides):
+    marks = overrides.pop('_marks', [])
+    defaults = dict(
         bot_username='testbot',
         name_mention_re=None,
         image_default_prompt='',
         chat_react_prompt='react',
         max_unmentioned_replies=3,
         recent_activity_seconds=30,
-        last_activity_time=last_activity_time,
-        messages_since_bot_reply=messages_since_bot_reply,
-        bot_unmentioned_count=bot_unmentioned_count,
-        last_bot_reply_time=last_bot_reply_time,
         try_claim_message=AsyncMock(return_value=True),
         nudge_inactive_chats=AsyncMock(),
         get_picture_of_the_day=AsyncMock(),
@@ -80,6 +68,17 @@ async def test_direct_mention_replies():
         extract_json_image=AsyncMock(return_value=None),
         needs_voice_tool=lambda text: False,
     )
+    defaults.update(overrides)
+    return BotContext(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_direct_mention_replies():
+    msg = FakeMessage('@testbot hello')
+    marks = []
+    ctx = _make_ctx(_marks=marks)
+
+    await handle_text_message(msg, ctx)
 
     assert msg.replies == ['test-reply']
     assert marks == [100]
@@ -89,34 +88,9 @@ async def test_direct_mention_replies():
 async def test_ignore_other_bot_mention():
     msg = FakeMessage('@otherbot hello')
     ask_agent = AsyncMock(return_value='should-not-send')
+    ctx = _make_ctx(ask_agent=ask_agent)
 
-    await handle_text_message(
-        msg,
-        bot_username='testbot',
-        name_mention_re=None,
-        image_default_prompt='',
-        chat_react_prompt='react',
-        max_unmentioned_replies=3,
-        recent_activity_seconds=30,
-        last_activity_time={},
-        messages_since_bot_reply={},
-        bot_unmentioned_count={},
-        last_bot_reply_time={},
-        try_claim_message=AsyncMock(return_value=True),
-        nudge_inactive_chats=AsyncMock(),
-        get_picture_of_the_day=AsyncMock(),
-        style_caption=AsyncMock(),
-        retrieve_joke=AsyncMock(),
-        retrieve_fact=AsyncMock(),
-        generate_voice_file=AsyncMock(),
-        ask_openai=AsyncMock(),
-        ask_agent=ask_agent,
-        clean_openai_reply=lambda x: x,
-        mark_bot_replied=lambda chat_id: None,
-        extract_voice_file=AsyncMock(return_value=None),
-        extract_json_image=AsyncMock(return_value=None),
-        needs_voice_tool=lambda text: False,
-    )
+    await handle_text_message(msg, ctx)
 
     ask_agent.assert_not_awaited()
     assert msg.replies == []

@@ -21,6 +21,7 @@ import agent_client
 import bot_bus
 from bus_runtime import initialize_bus_positions, poll_bot_bus
 from nudge import nudge_inactive_chats as run_nudge_loop, get_nudge_prompt as build_nudge_prompt
+from bot_context import BotContext
 from handlers.messages import handle_text_message
 from handlers.photos import handle_photo_message
 import base64
@@ -503,49 +504,51 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
                 logging.error(f"Failed to send nudge image to chat {chat_id}: {e}")
 
 
+_bot_ctx: BotContext | None = None
+
+
+def _get_bot_ctx() -> BotContext:
+    global _bot_ctx
+    if _bot_ctx is None:
+        _bot_ctx = BotContext(
+            bot_username=BOT_USERNAME,
+            name_mention_re=NAME_MENTION_RE,
+            image_default_prompt=IMAGE_DEFAULT_PROMPT,
+            chat_react_prompt=CHAT_REACT_PROMPT,
+            max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
+            recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
+            last_activity_time=last_activity_time,
+            messages_since_bot_reply=messages_since_bot_reply,
+            bot_unmentioned_count=bot_unmentioned_count,
+            last_bot_reply_time=last_bot_reply_time,
+            try_claim_message=try_claim_message,
+            nudge_inactive_chats=nudge_inactive_chats,
+            get_picture_of_the_day=get_picture_of_the_day,
+            style_caption=style_caption,
+            retrieve_joke=retrieve_joke,
+            retrieve_fact=retrieve_fact,
+            generate_voice_file=generate_voice_file,
+            ask_openai=ask_openai,
+            ask_agent=ask_agent,
+            ask_openai_image=ask_openai_image,
+            clean_openai_reply=clean_openai_reply,
+            mark_bot_replied=mark_bot_replied,
+            extract_voice_file=_extract_voice_file,
+            extract_json_image=_extract_json_image,
+            needs_voice_tool=_needs_voice_tool,
+            bot=bot,
+        )
+    return _bot_ctx
+
+
 @dp.message(F.text)
 async def handle_message(message: Message):
-    await handle_text_message(
-        message,
-        bot_username=BOT_USERNAME,
-        name_mention_re=NAME_MENTION_RE,
-        image_default_prompt=IMAGE_DEFAULT_PROMPT,
-        chat_react_prompt=CHAT_REACT_PROMPT,
-        max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
-        recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
-        last_activity_time=last_activity_time,
-        messages_since_bot_reply=messages_since_bot_reply,
-        bot_unmentioned_count=bot_unmentioned_count,
-        last_bot_reply_time=last_bot_reply_time,
-        try_claim_message=try_claim_message,
-        nudge_inactive_chats=nudge_inactive_chats,
-        get_picture_of_the_day=get_picture_of_the_day,
-        style_caption=style_caption,
-        retrieve_joke=retrieve_joke,
-        retrieve_fact=retrieve_fact,
-        generate_voice_file=generate_voice_file,
-        ask_openai=ask_openai,
-        ask_agent=ask_agent,
-        clean_openai_reply=clean_openai_reply,
-        mark_bot_replied=mark_bot_replied,
-        extract_voice_file=_extract_voice_file,
-        extract_json_image=_extract_json_image,
-        needs_voice_tool=_needs_voice_tool,
-    )
+    await handle_text_message(message, _get_bot_ctx())
 
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
-    await handle_photo_message(
-        message,
-        bot=bot,
-        image_default_prompt=IMAGE_DEFAULT_PROMPT,
-        last_activity_time=last_activity_time,
-        messages_since_bot_reply=messages_since_bot_reply,
-        try_claim_message=try_claim_message,
-        ask_openai_image=ask_openai_image,
-        mark_bot_replied=mark_bot_replied,
-    )
+    await handle_photo_message(message, _get_bot_ctx())
 
 
 async def get_picture_of_the_day(date: str = "") -> tuple[str | bytes, str]:

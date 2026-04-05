@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.join(__file__, '..'))))
 
+from bot_context import BotContext
 from handlers.photos import handle_photo_message
 
 
@@ -54,23 +55,25 @@ async def test_handle_photo_message_module():
     msg = FakeMessage(caption='look')
     fake_bot = AsyncMock()
     fake_bot.download = AsyncMock(return_value=FakeDownloaded(b'img-bytes'))
-    last_activity_time = {}
-    messages_since_bot_reply = {}
     marks = []
 
-    await handle_photo_message(
-        msg,
-        bot=fake_bot,
+    ctx = BotContext(
+        bot_username='testbot',
+        name_mention_re=None,
         image_default_prompt='default prompt',
-        last_activity_time=last_activity_time,
-        messages_since_bot_reply=messages_since_bot_reply,
+        chat_react_prompt='',
+        max_unmentioned_replies=3,
+        recent_activity_seconds=30,
         try_claim_message=AsyncMock(return_value=True),
         ask_openai_image=AsyncMock(return_value='got image'),
         mark_bot_replied=lambda chat_id: marks.append(chat_id),
+        bot=fake_bot,
     )
+
+    await handle_photo_message(msg, ctx)
 
     fake_bot.download.assert_awaited_once()
     assert msg.replies == ['got image']
     assert marks == [100]
-    assert messages_since_bot_reply[100] == 1
-    assert 100 in last_activity_time
+    assert ctx.messages_since_bot_reply[100] == 1
+    assert 100 in ctx.last_activity_time
