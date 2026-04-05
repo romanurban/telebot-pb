@@ -108,6 +108,7 @@ async def test_manual_nudge_command_variants(monkeypatch):
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
     main.bot_unmentioned_count.clear()
+    main._bot_ctx = None
 
     nudge_mock = AsyncMock()
     monkeypatch.setattr(main, 'nudge_inactive_chats', nudge_mock)
@@ -357,6 +358,7 @@ async def test_inactivity_gap_clears_history(monkeypatch):
     main.last_bot_reply_time.clear()
     main.bot_unmentioned_count.clear()
     main.messages_since_bot_reply.clear()
+    main._bot_ctx = None
 
     chat_id = 100
     agent_client._histories[chat_id] = [{"role": "user", "content": "old convo"}]

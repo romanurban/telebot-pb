@@ -55,6 +55,7 @@ async def test_direct_mention(monkeypatch):
     main.bot_unmentioned_count.clear()
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
+    main._bot_ctx = None
     fake_msg = FakeMessage(f'@{main.BOT_USERNAME} hi')
     ask_mock = AsyncMock(return_value='test-reply')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
@@ -72,6 +73,7 @@ async def test_unmentioned_reply(monkeypatch):
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
     main.messages_since_bot_reply.clear()
+    main._bot_ctx = None
     fake_msg = FakeMessage('hello')
     ask_mock = AsyncMock(return_value='test-reply')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
@@ -93,6 +95,7 @@ async def test_unmentioned_no_reply_due_to_probability(monkeypatch):
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
     main.messages_since_bot_reply.clear()
+    main._bot_ctx = None
     fake_msg = FakeMessage('ping')
     ask_mock = AsyncMock(return_value='will-not-be-used')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
@@ -113,6 +116,7 @@ async def test_unmentioned_limit_reached(monkeypatch):
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
     main.messages_since_bot_reply.clear()
+    main._bot_ctx = None
     fake_msg = FakeMessage('again')
     ask_mock = AsyncMock(return_value='should-not-reply')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
@@ -135,6 +139,7 @@ async def test_recent_bot_activity_overrides_probability(monkeypatch):
     main.bot_unmentioned_count.clear()
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
+    main._bot_ctx = None
     fake_msg = FakeMessage('hey')
     ask_mock = AsyncMock(return_value='new-reply')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
@@ -165,6 +170,7 @@ async def test_direct_mention_resets_counter(monkeypatch):
     main.bot_unmentioned_count.clear()
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
+    main._bot_ctx = None
     fake_msg = FakeMessage(f'@{main.BOT_USERNAME} yo')
     ask_mock = AsyncMock(return_value='ok')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
@@ -184,6 +190,7 @@ async def test_voice_command(monkeypatch, tmp_path):
     main.bot_unmentioned_count.clear()
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
+    main._bot_ctx = None
     msg = FakeMessage('/voice hello world')
     monkeypatch.setattr(main, 'try_claim_message', AsyncMock(return_value=True))
     voice_path = tmp_path / 'v.ogg'
@@ -209,6 +216,7 @@ async def test_voice_command_usage(monkeypatch):
     main.bot_unmentioned_count.clear()
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
+    main._bot_ctx = None
     msg = FakeMessage('/voice')
     monkeypatch.setattr(main, 'try_claim_message', AsyncMock(return_value=True))
     gen_mock = AsyncMock()
@@ -228,6 +236,7 @@ async def test_voice_in_assistant_reply(monkeypatch, tmp_path):
     main.bot_unmentioned_count.clear()
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
+    main._bot_ctx = None
     msg = FakeMessage(f'@{main.BOT_USERNAME} hi')
     voice_path = tmp_path / 'a.mp3'
     voice_path.write_text('x')
@@ -251,6 +260,7 @@ async def test_voice_trigger_prefix(monkeypatch):
     main.bot_unmentioned_count.clear()
     main.last_activity_time.clear()
     main.last_bot_reply_time.clear()
+    main._bot_ctx = None
     msg = FakeMessage(f'@{main.BOT_USERNAME} голосом привет')
     ask_mock = AsyncMock(return_value='hi')
     monkeypatch.setattr(main, 'ask_openai', ask_mock)
