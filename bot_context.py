@@ -25,6 +25,7 @@ class BotContext:
     messages_since_bot_reply: dict[int, int] = field(default_factory=dict)
     bot_unmentioned_count: dict[int, int] = field(default_factory=dict)
     last_bot_reply_time: dict[int, Any] = field(default_factory=dict)
+    bus_last_reply: dict[int, float] = field(default_factory=dict)
 
     # ── Callable dependencies ──────────────────────────────────────────
     try_claim_message: Any = None

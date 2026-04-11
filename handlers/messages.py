@@ -24,6 +24,7 @@ async def handle_text_message(message, ctx: BotContext):
     last_time = ctx.last_activity_time.get(chat_id)
     ctx.last_activity_time[chat_id] = datetime.now()
     ctx.messages_since_bot_reply[chat_id] = ctx.messages_since_bot_reply.get(chat_id, 0) + 1
+    ctx.bus_last_reply.pop(chat_id, None)
 
     if last_time and (datetime.now() - last_time).total_seconds() / 60 >= inactivity_clear_minutes:
         agent_client.clear_history(chat_id)

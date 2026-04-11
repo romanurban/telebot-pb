@@ -522,6 +522,7 @@ def _get_bot_ctx() -> BotContext:
             messages_since_bot_reply=messages_since_bot_reply,
             bot_unmentioned_count=bot_unmentioned_count,
             last_bot_reply_time=last_bot_reply_time,
+            bus_last_reply=_bus_last_reply,
             try_claim_message=try_claim_message,
             nudge_inactive_chats=nudge_inactive_chats,
             get_picture_of_the_day=get_picture_of_the_day,
