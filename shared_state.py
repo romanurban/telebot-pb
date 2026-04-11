@@ -8,6 +8,8 @@ SHARED_STATE_FILE = os.getenv('SHARED_STATE_FILE', '/tmp/telebot-nudge-state.jso
 
 def load_shared_last_activity():
     """Load last_activity_time from shared file."""
+    if os.getenv('PYTEST_CURRENT_TEST'):
+        return {}
     if not os.path.exists(SHARED_STATE_FILE):
         return {}
     try:
@@ -20,6 +22,8 @@ def load_shared_last_activity():
 
 def save_shared_last_activity(last_activity_time):
     """Save last_activity_time to shared file."""
+    if os.getenv('PYTEST_CURRENT_TEST'):
+        return
     try:
         data = {str(k): v.isoformat() for k, v in last_activity_time.items()}
         with open(SHARED_STATE_FILE, 'w') as f:
