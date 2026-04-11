@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from shared_state import load_shared_last_activity, save_shared_last_activity, load_shared_bot_unmentioned, save_shared_bot_unmentioned
 import random
 from datetime import datetime
 
@@ -96,6 +97,13 @@ async def nudge_inactive_chats(
             nudge_minutes = get_nudge_minutes()
 
             now = datetime.now()
+            # Load shared state from file to sync with other bot processes
+            shared_last_activity = load_shared_last_activity()
+            for chat_id, shared_time in shared_last_activity.items():
+                local_time = last_activity_time.get(chat_id)
+                if local_time is None or shared_time > local_time:
+                    last_activity_time[chat_id] = shared_time
+
             if (now - last_reset).total_seconds() >= nudge_reset_interval:
                 bot_unmentioned_count.clear()
                 last_reset = now

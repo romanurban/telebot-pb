@@ -11,6 +11,7 @@ wheels/
 
 # Environment variables
 .env
+.env.*
 
 # Ignore everything in dataset except neuroyury_bot and its files
 dataset/*

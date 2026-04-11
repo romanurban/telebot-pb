@@ -75,6 +75,7 @@ from state import (
     _bus_positions,
     _bus_last_reply,
 )
+from shared_state import save_shared_last_activity, save_shared_bot_unmentioned
 from claims import claim_key as _claims_claim_key, try_claim_message as _try_claim_message, cleanup_old_claims, CLAIM_DIR
 
 _openai_images_client = get_openai_images_client()
@@ -716,6 +717,8 @@ def mark_bot_replied(chat_id):
     last_activity_time[chat_id] = now
     last_bot_reply_time[chat_id] = now
     messages_since_bot_reply[chat_id] = 0
+    save_shared_last_activity(last_activity_time)
+    save_shared_bot_unmentioned(bot_unmentioned_count)
 
 
 def clean_openai_reply(text: str) -> str:
