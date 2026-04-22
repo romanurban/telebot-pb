@@ -18,6 +18,7 @@ MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8888/sse")
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL")
+OPENROUTER_FALLBACK_MODEL = os.getenv("OPENROUTER_FALLBACK_MODEL")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 USE_OPENROUTER = bool(OPENROUTER_API_KEY and OPENROUTER_MODEL)
@@ -39,6 +40,25 @@ _agent: Agent | None = None
 _mcp_server: MCPServerSse | None = None
 _system_history: list[dict] = []
 _histories: dict[int, list[dict]] = {}  # chat_id -> last N user messages
+
+
+def _make_agent(bot_name: str, system_prompt: str, model_name: str) -> Agent:
+    return Agent(
+        name=bot_name,
+        instructions=system_prompt,
+        tools=[],
+        mcp_servers=[_mcp_server] if _mcp_server is not None else [],
+        model=model_name,
+    )
+
+
+def _should_try_openrouter_fallback(err: Exception) -> bool:
+    status_code = getattr(err, "status_code", None)
+    if status_code in (404, 429):
+        return True
+    if isinstance(status_code, int) and status_code >= 500:
+        return True
+    return False
 
 
 def _normalize_history(history: list[dict]) -> list[dict]:
@@ -124,12 +144,10 @@ async def create_thread_with_system_prompt(
         client_session_timeout_seconds=30,
     )
     await _mcp_server.connect()
-    _agent = Agent(
-        name=bot_name,
-        instructions=system_prompt,
-        tools=[],
-        mcp_servers=[_mcp_server],
-        model=OPENROUTER_MODEL if USE_OPENROUTER else OPENAI_MODEL,
+    _agent = _make_agent(
+        bot_name,
+        system_prompt,
+        OPENROUTER_MODEL if USE_OPENROUTER else OPENAI_MODEL,
     )
     _system_history = [{"role": "system", "content": system_prompt}]
 
@@ -181,15 +199,20 @@ async def ask_agent(contents: list[dict], chat_id: int, *, tool_choice: str | No
     try:
         result = await Runner.run(_agent, api_history, run_config=run_cfg)
     except Exception as first_err:
-        if _mcp_server is None:
-            raise
-        print(f"[ask_agent] Chat {chat_id}: Runner failed ({first_err!r}), reconnecting MCP...")
-        try:
-            await _mcp_server.cleanup()
-        except Exception:
-            pass
-        await _mcp_server.connect()
-        result = await Runner.run(_agent, api_history, run_config=run_cfg)
+        if USE_OPENROUTER and OPENROUTER_FALLBACK_MODEL and _should_try_openrouter_fallback(first_err):
+            print(f"[ask_agent] Chat {chat_id}: primary model failed ({first_err!r}), trying fallback {OPENROUTER_FALLBACK_MODEL}...")
+            fallback_agent = _make_agent(_agent.name, _system_history[0]["content"], OPENROUTER_FALLBACK_MODEL)
+            result = await Runner.run(fallback_agent, api_history, run_config=run_cfg)
+        else:
+            if _mcp_server is None:
+                raise
+            print(f"[ask_agent] Chat {chat_id}: Runner failed ({first_err!r}), reconnecting MCP...")
+            try:
+                await _mcp_server.cleanup()
+            except Exception:
+                pass
+            await _mcp_server.connect()
+            result = await Runner.run(_agent, api_history, run_config=run_cfg)
 
     reply = str(result.final_output)
 
