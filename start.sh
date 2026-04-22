@@ -153,6 +153,34 @@ configured_bots() {
     done
 }
 
+restart_targets() {
+    local sessions="$1"
+    if [[ -z "$sessions" ]]; then
+        echo "$(date): No telebot processes running."
+        return
+    fi
+
+    for sess in $sessions; do
+        stop_session "$sess"
+    done
+
+    for sess in $sessions; do
+        target="${sess#telebot-}"
+        if [[ "$target" == "mcp" ]]; then
+            NO_ATTACH=true "$0" "$target" start
+            wait_for_port "${MCP_PORT:-8888}" 15
+        fi
+    done
+    for sess in $sessions; do
+        target="${sess#telebot-}"
+        if [[ "$target" != "mcp" ]]; then
+            NO_ATTACH=true "$0" "$target" start &
+        fi
+    done
+    wait
+    echo "$(date): All processes restarted."
+}
+
 # ---------------------------------------------------------------
 # all: start MCP + all configured bots + autoupdate
 # ---------------------------------------------------------------
@@ -213,38 +241,32 @@ if [[ "$TARGET" == "autoupdate" ]]; then
 
     echo "Auto-update watcher started (checking every ${INTERVAL}s)"
     while true; do
+        changed_env=false
+        if [[ -x "scripts/update_openrouter_recommendation.py" ]]; then
+            set +e
+            python3 scripts/update_openrouter_recommendation.py
+            rc=$?
+            set -e
+            if [[ "$rc" -eq 10 ]]; then
+                changed_env=true
+                echo "$(date): OpenRouter recommendation updated."
+            elif [[ "$rc" -ne 0 ]]; then
+                echo "$(date): OpenRouter recommendation refresh failed."
+            fi
+        fi
+
         git fetch origin
         LOCAL=$(git rev-parse HEAD)
         REMOTE=$(git rev-parse @{u})
         if [[ "$LOCAL" != "$REMOTE" ]]; then
             echo "$(date): Updates found. Pulling and restarting..."
             git pull --ff-only
-
             sessions=$(running_targets)
-            if [[ -z "$sessions" ]]; then
-                echo "$(date): No telebot processes running."
-            else
-                for sess in $sessions; do
-                    stop_session "$sess"
-                done
-
-                # Start MCP first, then wait for readiness before bots
-                for sess in $sessions; do
-                    target="${sess#telebot-}"
-                    if [[ "$target" == "mcp" ]]; then
-                        NO_ATTACH=true "$0" "$target" start
-                        wait_for_port "${MCP_PORT:-8888}" 15
-                    fi
-                done
-                for sess in $sessions; do
-                    target="${sess#telebot-}"
-                    if [[ "$target" != "mcp" ]]; then
-                        NO_ATTACH=true "$0" "$target" start &
-                    fi
-                done
-                wait
-                echo "$(date): All processes restarted."
-            fi
+            restart_targets "$sessions"
+        elif [[ "$changed_env" == true ]]; then
+            echo "$(date): Env updated. Restarting..."
+            sessions=$(running_targets)
+            restart_targets "$sessions"
         else
             echo "$(date): No updates."
         fi
