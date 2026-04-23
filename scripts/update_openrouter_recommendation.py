@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Refresh OpenRouter model recommendation in local .env.* files.
 
-Reads the current recommendation from shir-man's public page bundle and updates any
+Reads the current recommendation from shir-man's API and updates any
 bot env files that already use OpenRouter so they point at the current primary model
 plus a generic fallback router.
 
@@ -13,29 +13,37 @@ Exit codes:
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import urllib.request
 from pathlib import Path
 
-URL = "https://shir-man.com/free-llm/main.js"
+URL = "https://shir-man.com/api/free-llm/top-models"
 USER_AGENT = "telebot-openrouter-updater/1.0"
 FALLBACK_DEFAULT = "openrouter/free"
 ENV_GLOB = ".env.*"
 
 
-def fetch_js() -> str:
+def fetch_top_models() -> dict:
     req = urllib.request.Request(URL, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=20) as resp:
-        return resp.read().decode("utf-8")
+        return json.loads(resp.read().decode("utf-8"))
 
 
-def parse_models(js: str) -> tuple[str, str]:
-    primary = re.search(r"primary:\s*\{\s*id: \"([^\"]+)\"", js, re.S)
-    fallback = re.search(r"fallback:\s*\{\s*id: \"([^\"]+)\"", js, re.S)
-    if not primary:
+def parse_models(payload: dict) -> tuple[str, str]:
+    models = payload.get("models") or []
+    if not models or not isinstance(models[0], dict) or not models[0].get("id"):
         raise RuntimeError("primary recommendation not found")
-    return primary.group(1), fallback.group(1) if fallback else FALLBACK_DEFAULT
+    primary = models[0]["id"]
+    fallback_data = payload.get("fallback")
+    if isinstance(fallback_data, dict):
+        fallback = fallback_data.get("id") or FALLBACK_DEFAULT
+    elif isinstance(fallback_data, str):
+        fallback = fallback_data
+    else:
+        fallback = FALLBACK_DEFAULT
+    return primary, fallback
 
 
 def update_env_file(path: Path, primary: str, fallback: str) -> bool:
@@ -67,8 +75,8 @@ def update_env_file(path: Path, primary: str, fallback: str) -> bool:
 
 def main() -> int:
     root = Path.cwd()
-    js = fetch_js()
-    primary, fallback = parse_models(js)
+    payload = fetch_top_models()
+    primary, fallback = parse_models(payload)
 
     changed = []
     for path in sorted(root.glob(ENV_GLOB)):
