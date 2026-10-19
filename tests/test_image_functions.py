@@ -1,6 +1,5 @@
 import sys
 import os
-import base64
 
 os.environ.setdefault("TELEGRAM_TOKEN", "123456:TESTTOKEN")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test")
@@ -14,39 +13,42 @@ from unittest.mock import AsyncMock
 import main
 
 
-class FakeImageData:
-    def __init__(self, b64):
-        self.b64_json = b64
-
-
-class FakeImagesResponse:
-    def __init__(self, data):
-        self.data = data
-
-
 @pytest.mark.asyncio
 async def test_generate_image_success(monkeypatch):
-    img_bytes = b"imgdata"
-    encoded = base64.b64encode(img_bytes).decode()
+    monkeypatch.setattr(main, "ask_agent", AsyncMock(return_value='"A cat fixing a tap, photo"\nextra'))
+    fetch = AsyncMock(return_value=b"imgdata")
+    monkeypatch.setattr(main, "fetch_pollinations_image", fetch)
+    sent = []
+    monkeypatch.setattr(main.bot_bus, "broadcast", lambda *a, **k: sent.append((a, k)))
 
-    async_mock = AsyncMock(return_value=FakeImagesResponse([FakeImageData(encoded)]))
-    monkeypatch.setattr(main._openai_images_client.images, "generate", async_mock)
+    result = await main.generate_image_from_observation("obs", chat_id=5)
 
-    result = await main.generate_image_from_observation("obs")
-
-    assert result == img_bytes
-    async_mock.assert_awaited_once()
+    assert result == b"imgdata"
+    fetch.assert_awaited_once_with("A cat fixing a tap, photo")
+    assert sent and sent[0][0][0] == 5 and "A cat fixing a tap" in sent[0][0][2]
+    assert sent[0][1] == {"via_bus": True}
 
 
 @pytest.mark.asyncio
 async def test_generate_image_failure(monkeypatch):
-    async_mock = AsyncMock(side_effect=Exception("fail"))
-    monkeypatch.setattr(main._openai_images_client.images, "generate", async_mock)
+    monkeypatch.setattr(main, "ask_agent", AsyncMock(return_value="A cat"))
+    monkeypatch.setattr(main, "fetch_pollinations_image", AsyncMock(return_value=None))
+    sent = []
+    monkeypatch.setattr(main.bot_bus, "broadcast", lambda *a, **k: sent.append(a))
 
-    result = await main.generate_image_from_observation("obs")
+    result = await main.generate_image_from_observation("obs", chat_id=5)
 
     assert result is None
-    async_mock.assert_awaited_once()
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_generate_image_prompt_error(monkeypatch):
+    monkeypatch.setattr(main, "ask_agent", AsyncMock(side_effect=Exception("llm down")))
+    fetch = AsyncMock()
+    monkeypatch.setattr(main, "fetch_pollinations_image", fetch)
+    assert await main.generate_image_from_observation("obs") is None
+    fetch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

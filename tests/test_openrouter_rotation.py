@@ -60,3 +60,33 @@ def test_rotation_throttle(tmp_path, monkeypatch):
     assert not rot.rotation_due(1000.0 + 3600)
     assert rot.rotation_due(1000.0 + rot.ROTATE_HOURS * 3600)
     assert json.loads((tmp_path / 'stamp.json').read_text())['model'] == 'm'
+
+
+def test_red_square_png_is_valid():
+    import base64 as b64
+    data = b64.b64decode(rot.VISION_TEST_IMAGE.split(",", 1)[1])
+    assert data.startswith(b"\x89PNG\r\n\x1a\n") and data.endswith(b"IEND\xaeB`\x82")
+
+
+def test_order_vision_candidates():
+    ranked = ['a:free', 'b:free', 'c:free']
+    free_vision = ['x:free', 'b:free', 'a:free']
+    assert rot.order_vision_candidates(ranked, free_vision) == ['a:free', 'b:free', 'x:free']
+
+
+def test_vision_preflight(monkeypatch):
+    monkeypatch.setattr(rot, '_chat', lambda *a, **k: {'content': 'Красный'})
+    assert rot.vision_preflight('k', 'm') is None
+    monkeypatch.setattr(rot, '_chat', lambda *a, **k: {'content': 'Синий'})
+    assert 'did not see' in rot.vision_preflight('k', 'm')
+
+
+def test_vision_env_files_and_update(tmp_path):
+    (tmp_path / '.env').write_text('OPENROUTER_API_KEY=x\nOPENROUTER_VISION_MODEL=dead:free\n')
+    (tmp_path / '.env.bot').write_text('OPENROUTER_VISION_MODEL=old\n')
+    (tmp_path / '.env.other').write_text('OPENAI_MODEL=gpt\n')
+    files = rot.vision_env_files(tmp_path)
+    assert [p.name for p in files] == ['.env', '.env.bot']
+    assert rot.update_env_key(files[0], rot.VISION_ENV_KEY, 'new:free')
+    assert 'OPENROUTER_VISION_MODEL=new:free' in files[0].read_text()
+    assert not rot.update_env_key(files[0], rot.VISION_ENV_KEY, 'new:free')

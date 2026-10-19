@@ -154,7 +154,9 @@ async def ask_openai_contents(chat_id: int, contents, role="user", *, tool_choic
         reply = await ask_agent(message_list, chat_id=chat_id, tool_choice=tool_choice)
         return clean_openai_reply(reply)
     except Exception as e:
-        return f"LLM error: {e}"
+        # Never post the error into the chat; callers treat "" as "say nothing".
+        logging.error(f"[ask_openai_contents] LLM error in chat {chat_id}: {e}")
+        return ""
 
 
 async def ask_openai(
@@ -200,7 +202,9 @@ async def ask_openai_image(
             )
             return await ask_openai_contents(chat_id, agent_prompt)
         except Exception as e:
-            return f"LLM error: {e}"
+            # Couldn't see the image -> stay silent rather than guess or post the error
+            logging.error(f"[ask_openai_image] vision failed, not reacting: {e}")
+            return ""
         finally:
             if tmp_file:
                 try:
@@ -221,7 +225,8 @@ async def ask_openai_image(
         ]
         return await ask_openai_contents(chat_id, contents)
     except Exception as e:
-        return f"LLM error: {e}"
+        logging.error(f"[ask_openai_image] vision failed, not reacting: {e}")
+        return ""
 
 
 async def download_image_to_tmp(url: str) -> str:
@@ -491,7 +496,7 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
         logging.error(f"Failed to send nudge to chat {chat_id}: {e}")
 
     if random.random() < IMAGE_SEND_CHANCE:
-        image_bytes = await generate_image_from_observation(answer)
+        image_bytes = await generate_image_from_observation(answer, chat_id=chat_id)
         if image_bytes:
             try:
                 buffer = io.BytesIO(image_bytes)
@@ -646,21 +651,65 @@ async def style_caption(caption: str, *, chat_id: int) -> str:
     return await ask_openai(prompt, chat_id=chat_id)
 
 
-async def generate_image_from_observation(observation: str) -> bytes:
-    """Enhance observation and generate an image using OpenAI Images API."""
-    if _openai_images_client is None:
-        return None
+POLLINATIONS_URL = "https://gen.pollinations.ai/image/{prompt}"
+POLLINATIONS_ATTEMPTS = 3
+POLLINATIONS_RETRY_WAIT = 12  # anonymous tier answers 429/503 when busy
+
+
+async def make_image_prompt(observation: str) -> str:
+    """Turn a chat message into a short English text-to-image prompt.
+
+    Sent as a system message so it never lands in any chat history.
+    """
+    instruction = (
+        f"{IMAGE_GEN_INPUT_PROMPT.format(observation=observation)}\n\n"
+        "Верни ТОЛЬКО описание картинки на английском языке одной строкой, до 40 слов: "
+        "что изображено, обстановка, стиль. Без текста и надписей на картинке. "
+        "Ничего не генерируй сам и ничего не добавляй от себя."
+    )
+    raw = await ask_agent([{"role": "system", "content": instruction}], chat_id=0)
+    lines = [l.strip().strip('"\'«»').strip() for l in clean_openai_reply(raw or "").splitlines()]
+    lines = [l for l in lines if l]
+    return lines[0][:400] if lines else ""
+
+
+async def fetch_pollinations_image(prompt: str) -> bytes | None:
+    """Generate an image with Pollinations' free anonymous API (no key, no cost)."""
+    from urllib.parse import quote
+
+    url = POLLINATIONS_URL.format(prompt=quote(prompt, safe=""))
+    params = {"width": "1024", "height": "1024", "nologo": "true", "seed": str(random.randint(1, 10**9))}
+    timeout = aiohttp.ClientTimeout(total=120)
+    for attempt in range(1, POLLINATIONS_ATTEMPTS + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+                async with session.get(url, params=params) as resp:
+                    ctype = resp.headers.get("content-type", "")
+                    if resp.status == 200 and ctype.startswith("image/"):
+                        return await resp.read()
+                    logging.warning(f"[image-gen] Pollinations attempt {attempt}: HTTP {resp.status} {ctype}")
+        except Exception as e:
+            logging.warning(f"[image-gen] Pollinations attempt {attempt} failed: {e}")
+        if attempt < POLLINATIONS_ATTEMPTS:
+            await asyncio.sleep(POLLINATIONS_RETRY_WAIT)
+    return None
+
+
+async def generate_image_from_observation(observation: str, chat_id: int | None = None) -> bytes | None:
+    """Generate a picture for ``observation`` with a free model; None on any failure.
+
+    On success the picture's description is put on the bot bus so the other
+    bots know what was posted (they can't see images sent by bots).
+    """
     try:
-        response = await _openai_images_client.images.generate(
-            model=IMAGE_GEN_MODEL,
-            prompt=IMAGE_GEN_INPUT_PROMPT.format(observation=observation),
-            n=1,
-            size="1024x1024",
-            response_format="b64_json",
-        )
-        if response.data and response.data[0].b64_json:
-            return base64.b64decode(response.data[0].b64_json)
-        return None
+        prompt = await make_image_prompt(observation)
+        if not prompt:
+            return None
+        logging.info(f"[image-gen] prompt: {prompt!r}")
+        image = await fetch_pollinations_image(prompt)
+        if image and chat_id is not None:
+            bot_bus.broadcast(chat_id, BOT_USERNAME, f"[прислал картинку: {prompt}]", via_bus=True)
+        return image
     except Exception as e:
         logging.error(f"Image generation error: {e}")
         return None

@@ -112,6 +112,8 @@ async def handle_text_message(message, ctx: BotContext):
     if mentioned:
         prompt = re.sub(re.escape(mention_tag), '', message.text, count=1, flags=re.IGNORECASE).strip()
         answer = await ctx.ask_openai(prompt, username=username, chat_id=chat_id, tool_choice=tool_choice)
+        if not answer:
+            return  # LLM failed: say nothing rather than post an error
         voice = await ctx.extract_voice_file(answer)
         if voice is None and tool_choice == 'generate_voice':
             try:
@@ -194,7 +196,10 @@ async def handle_text_message(message, ctx: BotContext):
         raw_answer = await ctx.ask_agent(message_list, chat_id=chat_id, tool_choice=tool_choice)
         answer = ctx.clean_openai_reply(raw_answer)
     except Exception as e:
-        answer = f'LLM error: {e}'
+        logging.error(f"[handle] LLM error in chat {chat_id}: {e}")
+        return
+    if not answer:
+        return
 
     voice = await ctx.extract_voice_file(answer)
     if voice:

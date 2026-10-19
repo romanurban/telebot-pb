@@ -23,16 +23,22 @@ Exit codes:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import struct
 import sys
 import time
 import urllib.request
+import zlib
 from pathlib import Path
 
 URL = "https://shir-man.com/api/free-llm/top-models"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+VISION_ENV_KEY = "OPENROUTER_VISION_MODEL"
+VISION_EXCLUDE = ("safety", "lyria", "openrouter/")  # not general vision chat models
 USER_AGENT = "telebot-openrouter-updater/1.0"
 FALLBACK_DEFAULT = "openrouter/free"
 ENV_GLOB = ".env.*"
@@ -59,6 +65,23 @@ TOOL_DEF = {
         "parameters": {"type": "object", "properties": {}},
     },
 }
+
+
+def _red_square_png(size: int = 64) -> str:
+    """A solid red PNG as a data URL, built with stdlib only."""
+    row = b"\x00" + b"\xff\x00\x00" * size
+    raw = zlib.compress(row * size)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", raw) + chunk(b"IEND", b""))
+    return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+VISION_TEST_IMAGE = _red_square_png()
+VISION_PROMPT = "Какого цвета этот квадрат? Ответь одним словом."
 
 
 def log(msg: str) -> None:
@@ -143,6 +166,71 @@ def preflight(api_key: str, model: str) -> str | None:
     return None
 
 
+def fetch_free_vision_models() -> list[str]:
+    req = urllib.request.Request(OPENROUTER_MODELS_URL, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8")).get("data", [])
+
+    def is_free(m: dict) -> bool:
+        pricing = m.get("pricing") or {}
+        try:
+            return all(float(pricing.get(k) or 0) == 0 for k in ("prompt", "completion", "image", "request"))
+        except (TypeError, ValueError):
+            return False
+
+    return [
+        m["id"] for m in data
+        if "image" in (m.get("architecture") or {}).get("input_modalities", [])
+        and is_free(m)
+        and not any(x in m["id"] for x in VISION_EXCLUDE)
+    ]
+
+
+def order_vision_candidates(ranked: list[str], free_vision: list[str]) -> list[str]:
+    """Free vision models, the ones the ranking rates first, then the rest."""
+    vision = set(free_vision)
+    first = [m for m in ranked if m in vision]
+    return first + [m for m in free_vision if m not in first]
+
+
+def vision_preflight(api_key: str, model: str) -> str | None:
+    """Return a failure reason, or None if the model really sees the test image."""
+    try:
+        msg = _chat(api_key, model, [{"role": "user", "content": [
+            {"type": "text", "text": VISION_PROMPT},
+            {"type": "image_url", "image_url": {"url": VISION_TEST_IMAGE}},
+        ]}])
+    except Exception as exc:
+        return f"request failed: {exc}"
+    answer = msg.get("content") or ""
+    if not re.search(r"красн|red", answer, re.IGNORECASE):
+        return f"did not see red square: {answer[:60]!r}"
+    return None
+
+
+def update_env_key(path: Path, key: str, value: str) -> bool:
+    text = path.read_text(encoding="utf-8")
+    if re.search(rf"^{key}=.*$", text, flags=re.M):
+        new_text = re.sub(rf"^{key}=.*$", f"{key}={value}", text, flags=re.M)
+    else:
+        new_text = text + ("" if text.endswith("\n") else "\n") + f"{key}={value}\n"
+    if new_text == text:
+        return False
+    path.write_text(new_text, encoding="utf-8")
+    return True
+
+
+def vision_env_files(root: Path) -> list[Path]:
+    """.env (read by the MCP server's analyze_image) plus bot files that set the key."""
+    files = [root / ".env"] if (root / ".env").exists() else []
+    files += [
+        p for p in sorted(root.glob(ENV_GLOB))
+        if p.name != ".env.example" and ".bak" not in p.name
+        and re.search(rf"^{VISION_ENV_KEY}=", p.read_text(encoding="utf-8"), flags=re.M)
+    ]
+    return files
+
+
 def read_env_value(path: Path, key: str) -> str | None:
     m = re.search(rf"^{key}=(.*)$", path.read_text(encoding="utf-8"), flags=re.M)
     return m.group(1).strip().strip('"').strip("'") if m else None
@@ -223,17 +311,29 @@ def main() -> int:
     log(f"current={current} candidates={candidates[:MAX_CANDIDATES]}")
 
     primary, rejected = pick_model(api_key, candidates)
-    write_stamp(now, primary, rejected)
+    changed: list[str] = []
     if primary is None:
         log("no candidate passed preflight; keeping current model")
-        return 0
+    else:
+        changed += [p.name for p in env_files if update_env_file(p, primary, fallback)]
+        log(f"rotated {current} -> {primary} (fallback={fallback})" if changed else f"keeping {primary}")
 
-    changed = [p.name for p in env_files if update_env_file(p, primary, fallback)]
-    if changed:
-        log(f"rotated {current} -> {primary} (fallback={fallback}) files={','.join(changed)}")
-        return 10
-    log(f"keeping {primary}")
-    return 0
+    # Vision model used by analyze_image (MCP server) for photos posted in chat.
+    vision = None
+    try:
+        vision_candidates = order_vision_candidates(candidates, fetch_free_vision_models())
+        log(f"vision candidates={vision_candidates[:MAX_CANDIDATES]}")
+        vision, vision_rejected = pick_model(api_key, vision_candidates, check=vision_preflight)
+        rejected.update({f"vision:{k}": v for k, v in vision_rejected.items()})
+    except Exception as exc:
+        log(f"vision rotation failed: {exc}")
+    if vision:
+        vchanged = [p.name for p in vision_env_files(root) if update_env_key(p, VISION_ENV_KEY, vision)]
+        changed += vchanged
+        log(f"vision model -> {vision} files={','.join(vchanged)}" if vchanged else f"keeping vision {vision}")
+
+    write_stamp(now, primary, rejected)
+    return 10 if changed else 0
 
 
 if __name__ == "__main__":

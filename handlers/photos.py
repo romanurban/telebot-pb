@@ -18,5 +18,7 @@ async def handle_photo_message(message, ctx: BotContext):
     ctx.messages_since_bot_reply[chat_id] = ctx.messages_since_bot_reply.get(chat_id, 0) + 1
     ctx.bus_last_reply.pop(chat_id, None)
     answer = await ctx.ask_openai_image(image_bytes, prompt, chat_id=chat_id)
+    if not answer or not answer.strip():
+        return  # couldn't see the image: don't react at all
     ctx.mark_bot_replied(chat_id)
     await message.reply(answer)
