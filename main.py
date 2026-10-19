@@ -651,7 +651,7 @@ async def style_caption(caption: str, *, chat_id: int) -> str:
     return await ask_openai(prompt, chat_id=chat_id)
 
 
-POLLINATIONS_URL = "https://gen.pollinations.ai/image/{prompt}"
+POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"  # classic endpoint: no key needed (gen.* requires one)
 POLLINATIONS_ATTEMPTS = 3
 POLLINATIONS_RETRY_WAIT = 12  # anonymous tier answers 429/503 when busy
 
