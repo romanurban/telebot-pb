@@ -10,6 +10,27 @@ from claims import try_claim_nudge
 from message_filter import clean_self_mentions, validate_bot_interaction
 
 
+NUDGE_TASK_FRAME = (
+    "СЛУЖЕБНАЯ ЗАДАЧА — это НЕ сообщение из чата, тебе никто ничего не писал, "
+    "отвечать на эту задачу не нужно. В чате тишина, ты сам начинаешь разговор. "
+    "История чата пуста: не ссылайся на прошлые разговоры, чужие идеи или «вчерашние темы» — "
+    "если задача упоминает что-то такое, придумай конкретику сам. "
+    "Если задача написана как реплика (например, с @упоминанием другого бота), "
+    "это пример того, что ТЫ пишешь в чат от своего лица, а не сообщение тебе. "
+    "Без конструкций «не X, а Y» и сравнений «X — как Y». "
+    "Выдай только готовое сообщение для чата.\n\n"
+    "Задача: {prompt}"
+)
+
+
+def build_nudge_messages(prompt):
+    """Wrap a nudge prompt so the model executes it instead of replying to it.
+
+    Kept as a system message so it is never stored in the chat history.
+    """
+    return [{"role": "system", "content": NUDGE_TASK_FRAME.format(prompt=prompt)}]
+
+
 def get_random_nudge_prompt(nudge_system_prompts, nudge_prompt_history, history_len):
     """Return a random nudge prompt, avoiding recent repeats."""
     available_prompts = [p for p in nudge_system_prompts if p not in nudge_prompt_history]
@@ -69,7 +90,7 @@ async def nudge_inactive_chats(
 ):
     if force and force_chat_id is not None and force_message is not None:
         system_prompt = get_nudge_prompt_for_chat(force_chat_id)
-        message_list = [{"role": "system", "content": system_prompt}]
+        message_list = build_nudge_messages(system_prompt)
         raw_answer = await ask_agent(message_list, chat_id=force_chat_id)
         answer = clean_openai_reply(raw_answer)
         mark_bot_replied(force_chat_id)
@@ -145,7 +166,7 @@ async def nudge_inactive_chats(
                 try:
                     agent_client.clear_history(chat_id)
                     system_prompt = get_nudge_prompt_for_chat(chat_id)
-                    message_list = [{"role": "system", "content": system_prompt}]
+                    message_list = build_nudge_messages(system_prompt)
                     raw_answer = await ask_agent(message_list, chat_id=chat_id)
                     answer = clean_openai_reply(raw_answer)
                     

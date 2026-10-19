@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 
 import bot_bus
+import claims
 from message_filter import clean_self_mentions, validate_bot_interaction
 
 
@@ -199,6 +200,10 @@ async def poll_bot_bus(
                     if via_bus and chain_len <= BOT_BUS_MAX_CHAIN:
                         pass
                     elif not _should_probabilistic_reply(non_bot_count, recent_reply, is_nudge):
+                        continue
+
+                    # Only one bot reacts to a given bot message without being mentioned.
+                    if not claims.try_claim_bus_reply(chat_id, msg, bot_username):
                         continue
 
                     bot_unmentioned_count[chat_id] = bot_unmentioned + 1

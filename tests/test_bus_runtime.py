@@ -7,7 +7,48 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.join(__file__, '..'))
 
 import bus_runtime
 import bot_bus
+import claims
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_claims(monkeypatch, tmp_path):
+    monkeypatch.setattr(claims, 'CLAIM_DIR', str(tmp_path))
+
+
+def test_bus_reply_claim_only_one_bot_wins():
+    msg = {'bot': 'otherbot', 'text': 'hello', 'ts': 123.0}
+    assert claims.try_claim_bus_reply(100, msg, 'bot_a') is True
+    assert claims.try_claim_bus_reply(100, msg, 'bot_b') is False
+    # a different message is claimable again
+    assert claims.try_claim_bus_reply(100, {**msg, 'ts': 124.0}, 'bot_b') is True
+
+
+@pytest.mark.asyncio
+async def test_poll_bot_bus_skips_unmentioned_reply_when_claimed(monkeypatch):
+    fake_bot = AsyncMock()
+    msg = {'bot': 'otherbot', 'text': 'plain bus message', 'ts': 1.0}
+    claims.try_claim_bus_reply(100, msg, 'someotherbot')
+    monkeypatch.setattr(bus_runtime.os, 'listdir', lambda _p: ['100.jsonl'])
+    monkeypatch.setattr(bot_bus, 'BOT_BUS_DIR', '/tmp/fake-bus')
+    monkeypatch.setattr(bot_bus, 'poll', lambda chat_id, bot_username, last_pos: ([msg], 42))
+    monkeypatch.setattr(bot_bus, 'broadcast', lambda *args, **kwargs: None)
+    monkeypatch.setattr(bus_runtime.asyncio, 'sleep', _cancel_sleep)
+    monkeypatch.setattr(bus_runtime.random, 'random', lambda: 0.0)
+
+    with pytest.raises(RuntimeError):
+        await bus_runtime.poll_bot_bus(
+            bot=fake_bot, bot_username='testbot', bus_positions={}, bus_last_reply={},
+            last_activity_time={}, name_mention_re=None,
+            inject_external_message=lambda chat_id, other_bot, text: None,
+            ask_openai=AsyncMock(), ask_agent=AsyncMock(return_value='bus-react'),
+            clean_openai_reply=lambda x: x, mark_bot_replied=lambda c: None,
+            parse_mode='HTML', messages_since_bot_reply={}, bot_unmentioned_count={},
+            last_bot_reply_time={}, max_unmentioned_replies=3, recent_activity_seconds=30,
+            chat_react_prompt='react',
+        )
+
+    fake_bot.send_message.assert_not_awaited()
 
 
 def test_initialize_bus_positions_seeks_to_end(monkeypatch, tmp_path):

@@ -167,21 +167,36 @@ async def get_random_proverb() -> str:
         "https://ru.wikiquote.org/wiki/"
         "Special:RandomInCategory/%D0%9F%D0%BE%D1%81%D0%BB%D0%BE%D0%B2%D0%B8%D1%86%D1%8B?action=render"
     )
+    from urllib.parse import parse_qs
+
     headers = {"User-Agent": _DEFAULT_USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers, trust_env=True) as session:
-        async with session.get(url, ssl=False) as resp:
-            final_url = str(resp.url)
-            html = await resp.text()
-
-    title = unquote(urlparse(final_url).path.split("/")[-1]).replace("_", " ")
-
     li_pattern = re.compile(r"<li>(.*?)</li>", re.DOTALL)
-    items = [unescape(re.sub("<.*?>", "", m.group(1))).strip() for m in li_pattern.finditer(html)]
-    proverbs = [i for i in items if i]
-    if not proverbs:
-        raise ValueError("no proverbs found")
+    async with aiohttp.ClientSession(headers=headers, trust_env=True) as session:
+        # Random pages in the category include index/topic pages with no usable
+        # proverbs (empty items or links to other proverb pages) — try a few.
+        for _ in range(5):
+            async with session.get(url, ssl=False) as resp:
+                final_url = str(resp.url)
+                html = await resp.text()
+            parsed = urlparse(final_url)
+            # Redirect lands on /w/index.php?title=<Page>&action=render
+            title = parse_qs(parsed.query).get("title", [unquote(parsed.path.split("/")[-1])])[0]
+            title = title.replace("_", " ")
+            items = [
+                " ".join(unescape(re.sub("<.*?>", "", m.group(1))).split())
+                for m in li_pattern.finditer(html)
+            ]
+            proverbs = [
+                i for i in items
+                if len(i) >= 10 and " " in i
+                and re.search(r"[а-яё]", i, re.IGNORECASE)
+                and not re.search(r"[a-z]{3,}", i, re.IGNORECASE)
+                and not re.search(r"пословиц|поговор", i, re.IGNORECASE)
+            ]
+            if proverbs:
+                return f"{title}: {random.choice(proverbs)}"
 
-    return f"{title}: {random.choice(proverbs)}"
+    raise ValueError("no proverbs found")
 
 
 @mcp.tool()
