@@ -128,3 +128,18 @@ async def test_failed_llm_stays_silent():
     m = _msg(text='@mybot ?')
     await bm.handle_bot_text(m, ctx)
     m.reply.assert_not_awaited()
+
+
+def test_opener_addressed_to_another_bot_is_left_to_it():
+    # nudge "@neuroyury_bot, пойдёшь на квиз?" must not pull in a third bot
+    m = _msg(text='@neuroyury_bot, пойдёшь на квиз сегодня?', msg_id=90)
+    assert not bm.may_react(m, 'neuromans_bot', addressed=False, now=1000)
+    bm.reset_state()
+    other = SimpleNamespace(from_user=SimpleNamespace(username='neuroyury_bot'))
+    assert not bm.may_react(_msg(text='ага', msg_id=91, reply_to=other), 'neuromans_bot', addressed=False, now=1000)
+
+
+def test_addressed_elsewhere():
+    assert bm.addressed_elsewhere(_msg(text='@otherbot привет'), 'mybot')
+    assert not bm.addressed_elsewhere(_msg(text='@mybot привет'), 'mybot')
+    assert not bm.addressed_elsewhere(_msg(text='всем привет'), 'mybot')

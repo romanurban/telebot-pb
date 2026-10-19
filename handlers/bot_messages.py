@@ -71,6 +71,17 @@ def is_addressed(message, bot_username: str, name_mention_re=None) -> bool:
     return name_mention_re is not None and bool(name_mention_re.search(text))
 
 
+def addressed_elsewhere(message, bot_username: str) -> bool:
+    """True if the message is directed at someone else (reply to them or @mention of another bot)."""
+    reply_to = getattr(message, "reply_to_message", None)
+    if reply_to is not None and reply_to.from_user is not None:
+        if (reply_to.from_user.username or "").lower() != bot_username.lower():
+            return True
+    text = message.text or message.caption or ""
+    mentions = {m.lower() for m in re.findall(r"@(\w+)", text)}
+    return bool(mentions - {bot_username.lower()})
+
+
 def may_react(message, bot_username: str, *, addressed: bool, now: float | None = None) -> bool:
     """Count an incoming bot message and apply the loop limits to it."""
     chat_id = message.chat.id
@@ -87,8 +98,9 @@ def may_react(message, bot_username: str, *, addressed: bool, now: float | None 
         return False
     if addressed:
         return True
-    # Unaddressed: only a chain opener (nudge / bot answering a human), one bot only.
-    if chain != 1:
+    # Unaddressed: only a chain opener (nudge / bot answering a human) that isn't
+    # directed at someone else, and only one bot joins.
+    if chain != 1 or addressed_elsewhere(message, bot_username):
         return False
     return claims.try_claim_key(f"tg_{chat_id}_{message.message_id}", bot_username)
 
