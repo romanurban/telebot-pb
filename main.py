@@ -22,6 +22,7 @@ from bot_context import BotContext
 from handlers.messages import handle_text_message
 from handlers.photos import handle_photo_message
 from handlers import bot_messages
+from message_filter import thin_emoji
 import base64
 from tempfile import NamedTemporaryFile
 import aiohttp
@@ -771,7 +772,7 @@ def clean_openai_reply(text: str) -> str:
     import re
 
     pattern = r"[\{【]\d+:[^】}]+[】\}]"
-    return re.sub(pattern, "", text).strip()
+    return thin_emoji(re.sub(pattern, "", text or "").strip())
 
 
 def load_system_prompt() -> str:

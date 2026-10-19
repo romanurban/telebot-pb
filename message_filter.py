@@ -1,5 +1,20 @@
 """Message filtering utilities for bot responses."""
+import random
 import re
+
+# Trailing emoji cluster (plus variation selectors / ZWJ / skin tones) at the end of a reply.
+_TRAILING_EMOJI_RE = re.compile(
+    r"[\s]*[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\U0001F3FB-\U0001F3FF]+\s*$"
+)
+EMOJI_KEEP_CHANCE = 0.3
+
+
+def thin_emoji(text: str, keep_chance: float = EMOJI_KEEP_CHANCE, rand=random.random) -> str:
+    """Drop a trailing emoji most of the time, so it doesn't become a signature tic."""
+    if not text or rand() < keep_chance:
+        return text
+    stripped = _TRAILING_EMOJI_RE.sub("", text).rstrip()
+    return stripped or text
 
 
 def clean_self_mentions(message: str, bot_username: str) -> str:

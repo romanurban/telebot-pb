@@ -18,7 +18,9 @@ plus its own messages (Telegram doesn't deliver a bot's own messages back).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import re
 import time
 from datetime import datetime
@@ -31,6 +33,17 @@ from message_filter import clean_self_mentions, validate_bot_interaction
 MAX_CHAIN = 6               # bot messages in a row before the chain is cut
 CHAIN_COOLDOWN = 30 * 60    # seconds of silence after a cut; also resets a stale chain
 MIN_REPLY_GAP = 5           # seconds between this bot's replies to other bots (MAX_CHAIN is the real loop guard)
+REPLY_DELAY = (10, 40)      # seconds a bot "types" before answering another bot (includes LLM time)
+
+ADDRESSED_HINT = "К тебе обратился или тебе ответил другой участник чата. Ответь коротко, по-человечески."
+NATURAL_HINT = (
+    "Не заканчивай реплику вопросом без нужды — чаще просто отреагируй, согласись, пошути или поделись своим. "
+    "Не повторяй словечки и фразы, которые ты уже говорил в последних сообщениях."
+)
+CLOSING_HINT = (
+    "Это последняя реплика в этой ветке разговора: коротко закрой её (согласись, пошути, отмахнись), "
+    "БЕЗ вопроса и без нового повода продолжать."
+)
 
 _chain_len: dict[int, int] = {}
 _chain_last_ts: dict[int, float] = {}
@@ -90,7 +103,7 @@ def may_react(message, bot_username: str, *, addressed: bool, now: float | None 
 
     if now < _blocked_until.get(chat_id, 0):
         return False
-    if chain > MAX_CHAIN:
+    if chain >= MAX_CHAIN:
         _blocked_until[chat_id] = now + CHAIN_COOLDOWN
         logging.info(f"[b2b] {chain} bot messages in a row in {chat_id}: going quiet")
         return False
@@ -106,16 +119,50 @@ def may_react(message, bot_username: str, *, addressed: bool, now: float | None 
     return claims.try_claim_key(f"b2b_{claims.claim_key(message)}", bot_username)
 
 
+def is_last_in_chain(chat_id: int) -> bool:
+    """Our reply would be the last one before the chain cap."""
+    return _chain_len.get(chat_id, 0) >= MAX_CHAIN - 1
+
+
 async def _answer(message, ctx, sender: str, prompt: str, addressed: bool) -> str:
     chat_id = message.chat.id
-    if addressed:
-        return await ctx.ask_openai(prompt, username=sender, chat_id=chat_id)
+    hints = [ADDRESSED_HINT if addressed else ctx.chat_react_prompt, NATURAL_HINT]
+    if is_last_in_chain(chat_id):
+        hints.append(CLOSING_HINT)
     raw = await ctx.ask_agent(
         [{"role": "user", "content": f"{sender}: {prompt}"},
-         {"role": "system", "content": ctx.chat_react_prompt}],
+         {"role": "system", "content": " ".join(hints)}],
         chat_id=chat_id,
     )
     return ctx.clean_openai_reply(raw)
+
+
+async def _keep_typing(bot, chat_id: int) -> None:
+    """Show "typing…" until cancelled (Telegram clears it after ~5s)."""
+    try:
+        while True:
+            await bot.send_chat_action(chat_id, "typing")
+            await asyncio.sleep(4.5)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
+
+
+async def _with_human_pause(ctx, chat_id: int, coro):
+    """Run ``coro`` while showing "typing…", and don't answer faster than a person would."""
+    deadline = time.monotonic() + random.uniform(*REPLY_DELAY)
+    typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id)) if ctx.bot is not None else None
+    try:
+        result = await coro
+        if result:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        return result
+    finally:
+        if typing is not None:
+            typing.cancel()
 
 
 async def handle_bot_text(message, ctx) -> None:
@@ -132,7 +179,7 @@ async def handle_bot_text(message, ctx) -> None:
 
     prompt = re.sub(re.escape(f"@{ctx.bot_username}"), "", text, flags=re.IGNORECASE).strip()
     try:
-        answer = await _answer(message, ctx, sender, prompt, addressed)
+        answer = await _with_human_pause(ctx, chat_id, _answer(message, ctx, sender, prompt, addressed))
     except Exception as e:
         logging.error(f"[b2b] LLM error in chat {chat_id}: {e}")
         return
@@ -147,13 +194,18 @@ async def handle_bot_photo(message, ctx) -> None:
         return
     photo_bytes = await ctx.bot.download(message.photo[-1])
     prompt = message.caption or ctx.image_default_prompt
-    answer = await ctx.ask_openai_image(photo_bytes.read(), prompt, chat_id=chat_id)
+    answer = await _with_human_pause(
+        ctx, chat_id, ctx.ask_openai_image(photo_bytes.read(), prompt, chat_id=chat_id))
     await _send_reply(message, ctx, answer)
 
 
 async def _send_reply(message, ctx, answer: str) -> None:
     chat_id = message.chat.id
     answer = clean_self_mentions(answer or "", ctx.bot_username)
+    # The reply-quote already shows who we answer: drop a leading "@thatbot," mention.
+    sender = message.from_user.username or ""
+    if sender:
+        answer = re.sub(rf"^\s*@{re.escape(sender)}\b[\s,:;—–-]*", "", answer, flags=re.IGNORECASE)
     if not validate_bot_interaction(answer, ctx.bot_username):
         return
     try:

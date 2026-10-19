@@ -94,3 +94,34 @@ async def test_ignore_other_bot_mention():
 
     ask_agent.assert_not_awaited()
     assert msg.replies == []
+
+
+@pytest.fixture
+def _claims_dir(monkeypatch, tmp_path):
+    import claims
+    monkeypatch.setattr(claims, 'CLAIM_DIR', str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_human_message_gets_exactly_one_bot(monkeypatch, _claims_dir):
+    import handlers.messages as hm
+    monkeypatch.setattr(hm, 'HUMAN_REPLY_PERCENT', 100)
+    msg_a = FakeMessage('Чё по выходным?')
+    msg_b = FakeMessage('Чё по выходным?')
+    msg_b.date = msg_a.date
+    ctx_a = _make_ctx(bot_username='bot_a', ask_agent=AsyncMock(return_value='a-reply'))
+    ctx_b = _make_ctx(bot_username='bot_b', ask_agent=AsyncMock(return_value='b-reply'))
+    await handle_text_message(msg_a, ctx_a)
+    await handle_text_message(msg_b, ctx_b)
+    assert msg_a.replies == ['a-reply']
+    assert msg_b.replies == []
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_human_message_can_be_left_alone(monkeypatch, _claims_dir):
+    import handlers.messages as hm
+    monkeypatch.setattr(hm, 'HUMAN_REPLY_PERCENT', 0)
+    msg = FakeMessage('просто мысли вслух')
+    ctx = _make_ctx(ask_agent=AsyncMock(return_value='x'))
+    await handle_text_message(msg, ctx)
+    assert msg.replies == []

@@ -15,6 +15,7 @@ from handlers.messages import handle_text_message
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(claims, 'CLAIM_DIR', str(tmp_path))
+    monkeypatch.setattr(bm, 'REPLY_DELAY', (0, 0))
     bm.reset_state()
     yield
     bm.reset_state()
@@ -43,6 +44,7 @@ def _ctx(**kw):
         ask_agent=AsyncMock(return_value='react answer'),
         clean_openai_reply=lambda x: x,
         mark_bot_replied=lambda chat_id: bm.count_bot_message(chat_id),
+        bot=None,
     )
     for k, v in kw.items():
         setattr(ctx, k, v)
@@ -71,10 +73,11 @@ def test_unaddressed_mid_chain_ignored():
 
 def test_chain_is_cut_after_max_and_stays_quiet():
     now = 1000.0
-    for i in range(bm.MAX_CHAIN - 1):
+    for i in range(bm.MAX_CHAIN - 2):
         bm.count_bot_message(100, now=now + i)
-    assert bm.may_react(_msg(msg_id=9), 'mybot', addressed=True, now=now + 10)       # 6th message
-    assert not bm.may_react(_msg(msg_id=10), 'mybot', addressed=True, now=now + 20)  # 7th -> cut
+    assert bm.may_react(_msg(msg_id=9), 'mybot', addressed=True, now=now + 10)       # (MAX-1)th: last answer allowed
+    assert bm.is_last_in_chain(100)                                                    # ...and it must close the thread
+    assert not bm.may_react(_msg(msg_id=10), 'mybot', addressed=True, now=now + 20)  # MAX-th -> cut
     assert not bm.may_react(_msg(msg_id=11), 'mybot', addressed=True, now=now + 60)  # still blocked
     bm.reset_chain(100)                                                               # human writes
     assert bm.may_react(_msg(msg_id=12), 'mybot', addressed=True, now=now + 70)
@@ -97,9 +100,9 @@ async def test_handle_text_routes_bot_message():
     ctx = _ctx()
     m = _msg(text='@mybot как дела?')
     await handle_text_message(m, ctx)
-    ctx.ask_openai.assert_awaited_once()
+    ctx.ask_agent.assert_awaited_once()
     m.reply.assert_awaited_once()          # reply-quote, so the other bot receives it
-    assert m.reply.await_args.args[0] == 'addressed answer'
+    assert m.reply.await_args.args[0] == 'react answer'
 
 
 
@@ -117,7 +120,7 @@ async def test_not_reacting_still_remembers(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_failed_llm_stays_silent():
-    ctx = _ctx(ask_openai=AsyncMock(return_value=''))
+    ctx = _ctx(ask_agent=AsyncMock(return_value=''))
     m = _msg(text='@mybot ?')
     await bm.handle_bot_text(m, ctx)
     m.reply.assert_not_awaited()
@@ -152,3 +155,42 @@ def test_clean_self_mention_leaves_no_leading_comma():
     from message_filter import clean_self_mentions
     assert clean_self_mentions('@neuroyury_bot, ты тапки уже догнал?', 'neuroyury_bot') == 'ты тапки уже догнал?'
     assert clean_self_mentions('Ну @neuroyury_bot , ладно', 'neuroyury_bot') == 'Ну, ладно'
+
+
+@pytest.mark.asyncio
+async def test_closing_hint_on_last_reply_and_not_before():
+    ctx = _ctx()
+    await bm.handle_bot_text(_msg(text='@mybot привет', msg_id=1), ctx)
+    first_hint = ctx.ask_agent.await_args.args[0][1]['content']
+    assert bm.CLOSING_HINT not in first_hint and bm.NATURAL_HINT in first_hint
+    bm.reset_state()
+    for i in range(bm.MAX_CHAIN - 2):
+        bm.count_bot_message(100)
+    ctx = _ctx()
+    await bm.handle_bot_text(_msg(text='@mybot ну что?', msg_id=2), ctx)
+    assert bm.CLOSING_HINT in ctx.ask_agent.await_args.args[0][1]['content']
+
+
+@pytest.mark.asyncio
+async def test_reply_drops_redundant_mention_of_quoted_bot():
+    ctx = _ctx(ask_agent=AsyncMock(return_value='@otherbot, в восемь у входа.'))
+    m = _msg(text='@mybot когда?')
+    await bm.handle_bot_text(m, ctx)
+    assert m.reply.await_args.args[0] == 'в восемь у входа.'
+
+
+@pytest.mark.asyncio
+async def test_typing_shown_while_pausing(monkeypatch):
+    monkeypatch.setattr(bm, 'REPLY_DELAY', (0.05, 0.05))
+    bot = SimpleNamespace(send_chat_action=AsyncMock())
+    ctx = _ctx(bot=bot)
+    await bm.handle_bot_text(_msg(text='@mybot привет'), ctx)
+    bot.send_chat_action.assert_awaited_with(100, 'typing')
+
+
+def test_thin_emoji():
+    from message_filter import thin_emoji
+    assert thin_emoji('Кот смотрит сурово. 😐', rand=lambda: 0.9) == 'Кот смотрит сурово.'
+    assert thin_emoji('Кот смотрит сурово. 😐', rand=lambda: 0.1) == 'Кот смотрит сурово. 😐'
+    assert thin_emoji('Без эмодзи', rand=lambda: 0.9) == 'Без эмодзи'
+    assert thin_emoji('😐', rand=lambda: 0.9) == '😐'  # never empties a message

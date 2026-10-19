@@ -77,10 +77,9 @@ async def test_unmentioned_reply(monkeypatch):
     fake_msg = FakeMessage('hello')
     ask_mock = AsyncMock(return_value='test-reply')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
-    monkeypatch.setattr(main.random, 'random', lambda: 1.0)
-    chat_id = fake_msg.chat.id
-    # 4+ messages since last bot reply triggers always-respond
-    main.messages_since_bot_reply[chat_id] = 4
+    import claims, handlers.messages as hm, tempfile
+    monkeypatch.setattr(claims, 'CLAIM_DIR', tempfile.mkdtemp())
+    monkeypatch.setattr(hm, 'HUMAN_REPLY_PERCENT', 100)  # the shared coin says "answer"
 
     await main.handle_message(fake_msg)
 
@@ -99,7 +98,9 @@ async def test_unmentioned_no_reply_due_to_probability(monkeypatch):
     fake_msg = FakeMessage('ping')
     ask_mock = AsyncMock(return_value='will-not-be-used')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
-    monkeypatch.setattr(main.random, 'random', lambda: 0.9)
+    import claims, handlers.messages as hm, tempfile
+    monkeypatch.setattr(claims, 'CLAIM_DIR', tempfile.mkdtemp())
+    monkeypatch.setattr(hm, 'HUMAN_REPLY_PERCENT', 0)  # the shared coin says "leave it"
 
     await main.handle_message(fake_msg)
 
@@ -143,19 +144,12 @@ async def test_recent_bot_activity_overrides_probability(monkeypatch):
     fake_msg = FakeMessage('hey')
     ask_mock = AsyncMock(return_value='new-reply')
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
-    monkeypatch.setattr(main.random, 'random', lambda: 0.9)
+    import claims, handlers.messages as hm, tempfile
+    monkeypatch.setattr(claims, 'CLAIM_DIR', tempfile.mkdtemp())
+    monkeypatch.setattr(hm, 'HUMAN_REPLY_PERCENT', 0)  # the shared coin says "leave it"
     chat_id = fake_msg.chat.id
-    from datetime import datetime as real_datetime
-    base_time = real_datetime(2024, 1, 1, 12, 0, 0)
-
-    class FixedDatetime(real_datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return base_time
-
-    monkeypatch.setattr(main, 'datetime', FixedDatetime)
     # Bot replied 10 seconds ago — within RECENT_ACTIVITY_SECONDS window
-    main.last_bot_reply_time[chat_id] = base_time - main.timedelta(seconds=10)
+    main.last_bot_reply_time[chat_id] = main.datetime.now() - main.timedelta(seconds=10)
 
     await main.handle_message(fake_msg)
 

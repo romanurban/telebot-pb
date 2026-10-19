@@ -1,14 +1,17 @@
+import hashlib
 import logging
 import os
-import random
 import re
 from datetime import datetime
 
 import agent_client
 from aiogram.enums import ParseMode
 from aiogram.types.input_file import BufferedInputFile, FSInputFile
+import claims
 from bot_context import BotContext
 from handlers import bot_messages
+
+HUMAN_REPLY_PERCENT = 70  # chance that one bot answers an unaddressed human message
 
 
 async def handle_text_message(message, ctx: BotContext):
@@ -161,29 +164,22 @@ async def handle_text_message(message, ctx: BotContext):
     if re.search(r'@\w+bot\b', message.text, re.IGNORECASE):
         return
 
-    non_bot_count = ctx.messages_since_bot_reply.get(chat_id, 0)
     bot_unmentioned = ctx.bot_unmentioned_count.get(chat_id, 0)
     if bot_unmentioned >= ctx.max_unmentioned_replies:
         return
 
-    should_respond = False
-    now = datetime.now()
+    # One bot answers a person most of the time. Every bot computes the same
+    # coin from the message itself, then a claim picks the single responder
+    # (the others may still join afterwards through the bot-to-bot rules).
+    # If this bot spoke moments ago, the person is talking with it: skip the coin.
+    key = claims.claim_key(message)
     last_bot_time = ctx.last_bot_reply_time.get(chat_id)
-    if last_bot_time and (now - last_bot_time).total_seconds() <= ctx.recent_activity_seconds:
-        should_respond = True
-    else:
-        if non_bot_count == 0:
-            should_respond = random.random() < 0.1
-        elif non_bot_count == 1:
-            should_respond = random.random() < 0.25
-        elif non_bot_count == 2:
-            should_respond = random.random() < 0.5
-        elif non_bot_count == 3:
-            should_respond = random.random() < 0.75
-        else:
-            should_respond = True
-
-    if not should_respond:
+    in_conversation = bool(
+        last_bot_time and (datetime.now() - last_bot_time).total_seconds() <= ctx.recent_activity_seconds
+    )
+    if not in_conversation and int(hashlib.md5(key.encode()).hexdigest(), 16) % 100 >= HUMAN_REPLY_PERCENT:
+        return
+    if not claims.try_claim_key(f"human_{key}", ctx.bot_username):
         return
 
     ctx.bot_unmentioned_count[chat_id] = bot_unmentioned + 1
