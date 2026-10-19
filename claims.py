@@ -87,25 +87,6 @@ def try_claim_key(key: str, bot_username: str) -> bool:
         return False
 
 
-def try_claim_bus_reply(chat_id: int, msg: dict, bot_username: str) -> bool:
-    """Atomically claim the right to react (unmentioned) to one bus message.
-
-    Stops every bot from piling onto the same bot message with a paraphrase.
-    """
-    text = msg.get("text", "")
-    content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
-    key = f"bus_{chat_id}_{msg.get('bot', '')}_{msg.get('ts', '')}_{content_hash}"
-    claim_path = os.path.join(CLAIM_DIR, key)
-    try:
-        fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, bot_username.encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        logging.info(f"[bus-claim] {bot_username} LOST reply claim for key={key}")
-        return False
-
-
 def cleanup_old_claims(max_age: int = 300):
     """Remove claim files older than ``max_age`` seconds."""
     now = _time.time()

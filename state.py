@@ -18,8 +18,3 @@ bot_unmentioned_count = {}
 # chat_id: int — user messages since last bot reply
 messages_since_bot_reply = {}
 
-# Bot bus: track file read positions per chat
-_bus_positions: dict[int, int] = {}
-
-# chat_id -> timestamp of last bus-triggered reply
-_bus_last_reply: dict[int, float] = {}

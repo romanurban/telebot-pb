@@ -6,11 +6,9 @@ from handlers import bot_messages
 
 async def handle_photo_message(message, ctx: BotContext):
     if message.from_user and message.from_user.is_bot:
-        if ctx.native_bot_to_bot:
-            await bot_messages.handle_bot_photo(message, ctx)
+        await bot_messages.handle_bot_photo(message, ctx)
         return
-    if ctx.native_bot_to_bot:
-        bot_messages.reset_chain(message.chat.id)
+    bot_messages.reset_chain(message.chat.id)
     if not await ctx.try_claim_message(message):
         return
 
@@ -21,7 +19,6 @@ async def handle_photo_message(message, ctx: BotContext):
     chat_id = message.chat.id
     ctx.last_activity_time[chat_id] = datetime.now()
     ctx.messages_since_bot_reply[chat_id] = ctx.messages_since_bot_reply.get(chat_id, 0) + 1
-    ctx.bus_last_reply.pop(chat_id, None)
     answer = await ctx.ask_openai_image(image_bytes, prompt, chat_id=chat_id)
     if not answer or not answer.strip():
         return  # couldn't see the image: don't react at all

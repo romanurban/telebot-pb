@@ -5,7 +5,6 @@ import random
 from datetime import datetime
 
 import agent_client
-import bot_bus
 from claims import try_claim_nudge
 from message_filter import clean_self_mentions, validate_bot_interaction
 
@@ -95,8 +94,6 @@ async def nudge_inactive_chats(
         answer = clean_openai_reply(raw_answer)
         mark_bot_replied(force_chat_id)
         await send_nudge_with_image(force_message, force_chat_id, answer, is_message=True)
-        if answer:
-            bot_bus.broadcast(force_chat_id, bot_username, answer)
         return
 
     last_reset = datetime.now()
@@ -146,19 +143,12 @@ async def nudge_inactive_chats(
                 if minutes_passed < nudge_minutes:
                     continue
 
-                import time as _time
-                last_bus_ts = bot_bus.last_message_time(chat_id)
-                if last_bus_ts is not None:
-                    bus_age_min = (_time.time() - last_bus_ts) / 60
-                    if bus_age_min < nudge_minutes:
-                        continue
-
+                # Re-check after a random pause: another bot (or a person) may have spoken.
+                # Bots see each other's messages natively, so shared last-activity covers them.
                 await asyncio.sleep(random.uniform(5, 60))
-                last_bus_ts = bot_bus.last_message_time(chat_id)
-                if last_bus_ts is not None:
-                    bus_age_min = (_time.time() - last_bus_ts) / 60
-                    if bus_age_min < nudge_minutes:
-                        continue
+                fresh = load_shared_last_activity().get(chat_id)
+                if fresh and (datetime.now() - fresh).total_seconds() / 60 < nudge_minutes:
+                    continue
 
                 if not try_claim_nudge(chat_id, bot_username):
                     continue
@@ -178,8 +168,6 @@ async def nudge_inactive_chats(
                         
                     mark_bot_replied(chat_id)
                     await send_nudge_with_image(bot, chat_id, answer, caption="", is_message=False)
-                    if answer:
-                        bot_bus.broadcast(chat_id, bot_username, answer)
                 except Exception as e:
                     logging.error(f"[nudge] Error sending nudge to chat {chat_id}: {e}", exc_info=True)
                     continue

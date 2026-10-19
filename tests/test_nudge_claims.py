@@ -36,7 +36,6 @@ async def test_nudge_loop_skips_when_claim_lost(monkeypatch, tmp_path):
     monkeypatch.setattr(main, 'NUDGE_ENABLED_CHATS', {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
-    monkeypatch.setattr(main.bot_bus, 'last_message_time', lambda cid: None)
     monkeypatch.setattr(main, 'get_nudge_minutes', lambda: main.NUDGE_MINUTES)
     monkeypatch.setattr(nudge_module, 'try_claim_nudge', lambda chat_id, bot_username: False)
 

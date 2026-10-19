@@ -50,7 +50,6 @@ async def test_nudge_inactive_chat(monkeypatch):
     main.last_bot_reply_time.clear()
     main.bot_unmentioned_count.clear()
 
-    monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: None)
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
@@ -224,7 +223,6 @@ async def test_nudge_allowed_after_startup_grace(monkeypatch):
     main.last_bot_reply_time.clear()
     main.bot_unmentioned_count.clear()
 
-    monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: None)
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
@@ -266,7 +264,6 @@ async def test_automatic_nudge_clears_history(monkeypatch):
     main.last_bot_reply_time.clear()
     main.bot_unmentioned_count.clear()
 
-    monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: None)
     monkeypatch.setattr(main, "NUDGE_ENABLED_CHATS", {100})
     monkeypatch.setattr(main, 'ACTIVE_START', __import__('datetime').time(0, 0))
     monkeypatch.setattr(main, 'ACTIVE_END', __import__('datetime').time(23, 59))
@@ -388,7 +385,7 @@ async def test_inactivity_gap_clears_history(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_nudge_skipped_when_bus_has_recent_activity(monkeypatch):
+async def test_nudge_skipped_when_recent_activity(monkeypatch):
     """Nudge should be skipped when the bus shows recent bot activity."""
     import time as _time
 
@@ -412,9 +409,10 @@ async def test_nudge_skipped_when_bus_has_recent_activity(monkeypatch):
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
     monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
 
-    # Simulate another bot having posted 10 minutes ago via the bus
-    recent_ts = _time.time() - 10 * 60
-    monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: recent_ts)
+    # Another bot (seen natively) or a person spoke 10 minutes ago: shared last-activity
+    recent = main.datetime.now() - main.timedelta(minutes=10)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module, "load_shared_last_activity", lambda: {chat_id: recent})
 
     async def fake_sleep(seconds):
         raise RuntimeError('stop')
@@ -426,13 +424,13 @@ async def test_nudge_skipped_when_bus_has_recent_activity(monkeypatch):
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
 
-    # Agent should NOT have been called — bus shows recent activity
+    # Agent should NOT have been called — recent activity
     ask_mock.assert_not_awaited()
     send_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_nudge_allowed_when_bus_activity_expired(monkeypatch):
+async def test_nudge_allowed_when_activity_expired(monkeypatch):
     """Nudge should proceed when bus activity is older than NUDGE_MINUTES."""
     import time as _time
 
@@ -456,9 +454,10 @@ async def test_nudge_allowed_when_bus_activity_expired(monkeypatch):
     monkeypatch.setattr(main, 'ask_agent', ask_mock)
     monkeypatch.setattr(main, 'send_nudge_with_image', send_mock)
 
-    # Bus activity is old (NUDGE_MINUTES + 5 min ago)
-    old_ts = _time.time() - (main.NUDGE_MINUTES + 5) * 60
-    monkeypatch.setattr(main.bot_bus, "last_message_time", lambda cid: old_ts)
+    # Last activity anywhere is old (NUDGE_MINUTES + 5 min ago)
+    old = main.datetime.now() - main.timedelta(minutes=main.NUDGE_MINUTES + 5)
+    import nudge as nudge_module
+    monkeypatch.setattr(nudge_module, "load_shared_last_activity", lambda: {chat_id: old})
 
     sleep_calls = []
 
@@ -474,7 +473,7 @@ async def test_nudge_allowed_when_bus_activity_expired(monkeypatch):
     with pytest.raises(RuntimeError):
         await main.nudge_inactive_chats()
 
-    # Nudge should proceed since bus activity has expired
+    # Nudge should proceed since last activity is old
     ask_mock.assert_awaited_once()
     send_mock.assert_awaited_once()
 

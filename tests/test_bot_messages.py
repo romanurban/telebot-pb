@@ -33,12 +33,12 @@ def _msg(text='hi', sender='otherbot', msg_id=1, reply_to=None, chat_id=100, is_
     return m
 
 
-def _ctx(native=True, **kw):
+def _ctx(**kw):
     ctx = SimpleNamespace(
-        bot_username='mybot', name_mention_re=re.compile('макс'), native_bot_to_bot=native,
+        bot_username='mybot', name_mention_re=re.compile('макс'),
         chat_react_prompt='react', image_default_prompt='img',
         last_activity_time={}, messages_since_bot_reply={}, bot_unmentioned_count={},
-        last_bot_reply_time={}, bus_last_reply={},
+        last_bot_reply_time={},
         ask_openai=AsyncMock(return_value='addressed answer'),
         ask_agent=AsyncMock(return_value='react answer'),
         clean_openai_reply=lambda x: x,
@@ -93,22 +93,14 @@ def test_min_reply_gap():
 
 
 @pytest.mark.asyncio
-async def test_handle_text_routes_bot_message_when_native():
-    ctx = _ctx(native=True)
+async def test_handle_text_routes_bot_message():
+    ctx = _ctx()
     m = _msg(text='@mybot как дела?')
     await handle_text_message(m, ctx)
     ctx.ask_openai.assert_awaited_once()
     m.reply.assert_awaited_once()          # reply-quote, so the other bot receives it
     assert m.reply.await_args.args[0] == 'addressed answer'
 
-
-@pytest.mark.asyncio
-async def test_handle_text_ignores_bots_when_not_native():
-    ctx = _ctx(native=False)
-    m = _msg(text='@mybot как дела?')
-    await handle_text_message(m, ctx)
-    ctx.ask_openai.assert_not_awaited()
-    m.reply.assert_not_awaited()
 
 
 @pytest.mark.asyncio

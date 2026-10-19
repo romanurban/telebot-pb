@@ -18,28 +18,21 @@ async def test_generate_image_success(monkeypatch):
     monkeypatch.setattr(main, "ask_agent", AsyncMock(return_value='"A cat fixing a tap, photo"\nextra'))
     fetch = AsyncMock(return_value=b"imgdata")
     monkeypatch.setattr(main, "fetch_pollinations_image", fetch)
-    sent = []
-    monkeypatch.setattr(main.bot_bus, "broadcast", lambda *a, **k: sent.append((a, k)))
 
     result = await main.generate_image_from_observation("obs", chat_id=5)
 
     assert result == b"imgdata"
     fetch.assert_awaited_once_with("A cat fixing a tap, photo")
-    assert sent and sent[0][0][0] == 5 and "A cat fixing a tap" in sent[0][0][2]
-    assert sent[0][1] == {"via_bus": True}
 
 
 @pytest.mark.asyncio
 async def test_generate_image_failure(monkeypatch):
     monkeypatch.setattr(main, "ask_agent", AsyncMock(return_value="A cat"))
     monkeypatch.setattr(main, "fetch_pollinations_image", AsyncMock(return_value=None))
-    sent = []
-    monkeypatch.setattr(main.bot_bus, "broadcast", lambda *a, **k: sent.append(a))
 
     result = await main.generate_image_from_observation("obs", chat_id=5)
 
     assert result is None
-    assert sent == []
 
 
 @pytest.mark.asyncio

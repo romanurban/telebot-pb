@@ -14,12 +14,9 @@ from agent_client import (
     openai_client,
     create_thread_with_system_prompt,
     ask_agent,
-    inject_external_message,
     USE_OPENROUTER,
 )
 import agent_client
-import bot_bus
-from bus_runtime import initialize_bus_positions, poll_bot_bus
 from nudge import nudge_inactive_chats as run_nudge_loop, get_nudge_prompt as build_nudge_prompt
 from bot_context import BotContext
 from handlers.messages import handle_text_message
@@ -47,7 +44,6 @@ from config import (
     IMAGE_DEFAULT_PROMPT,
     CHAT_REACT_PROMPT,
     IMAGE_GEN_INPUT_PROMPT,
-    BOT_TO_BOT_NATIVE,
     NAME_MENTION_RE,
     FIRST_NUDGE_PROMPT,
     FIRST_NUDGE_START,
@@ -74,8 +70,6 @@ from state import (
     last_bot_reply_time,
     bot_unmentioned_count,
     messages_since_bot_reply,
-    _bus_positions,
-    _bus_last_reply,
 )
 from shared_state import save_shared_last_activity, save_shared_bot_unmentioned
 from claims import claim_key as _claims_claim_key, try_claim_message as _try_claim_message, cleanup_old_claims, CLAIM_DIR
@@ -525,12 +519,10 @@ def _get_bot_ctx() -> BotContext:
             chat_react_prompt=CHAT_REACT_PROMPT,
             max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
             recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
-            native_bot_to_bot=BOT_TO_BOT_NATIVE,
             last_activity_time=last_activity_time,
             messages_since_bot_reply=messages_since_bot_reply,
             bot_unmentioned_count=bot_unmentioned_count,
             last_bot_reply_time=last_bot_reply_time,
-            bus_last_reply=_bus_last_reply,
             try_claim_message=try_claim_message,
             nudge_inactive_chats=nudge_inactive_chats,
             get_picture_of_the_day=get_picture_of_the_day,
@@ -710,8 +702,6 @@ async def generate_image_from_observation(observation: str, chat_id: int | None 
             return None
         logging.info(f"[image-gen] prompt: {prompt!r}")
         image = await fetch_pollinations_image(prompt)
-        if image and chat_id is not None and not BOT_TO_BOT_NATIVE:  # natively, bots see the photo itself
-            bot_bus.broadcast(chat_id, BOT_USERNAME, f"[прислал картинку: {prompt}]", via_bus=True)
         return image
     except Exception as e:
         logging.error(f"Image generation error: {e}")
@@ -770,8 +760,7 @@ def mark_bot_replied(chat_id):
     last_activity_time[chat_id] = now
     last_bot_reply_time[chat_id] = now
     messages_since_bot_reply[chat_id] = 0
-    if BOT_TO_BOT_NATIVE:
-        bot_messages.count_bot_message(chat_id)  # our own messages aren't delivered back to us
+    bot_messages.count_bot_message(chat_id)  # our own messages aren't delivered back to us
     save_shared_last_activity(last_activity_time)
     save_shared_bot_unmentioned(bot_unmentioned_count)
 
@@ -803,9 +792,6 @@ async def periodic_history_save():
             await asyncio.sleep(300)  # Save every 5 minutes
             agent_client.save_histories_to_disk()
             cleanup_old_claims()
-            # Trim bot bus files
-            for chat_id in list(_bus_positions.keys()):
-                bot_bus.trim(chat_id)
     except asyncio.CancelledError:
         logging.info("[history_save] Cancelled, saving before exit.")
         agent_client.save_histories_to_disk()
@@ -823,37 +809,9 @@ async def startup() -> None:
     if system_prompt:
         await create_thread_with_system_prompt(system_prompt, BOT_USERNAME)
 
-    # Initialize bot bus for inter-bot communication
-    initialize_bus_positions(_bus_positions)
-
     # Start background tasks
     asyncio.create_task(nudge_inactive_chats())
     asyncio.create_task(periodic_history_save())
-    if BOT_TO_BOT_NATIVE:
-        logging.info("[startup] native bot-to-bot mode: bus poll loop disabled")
-    else:
-        asyncio.create_task(
-            poll_bot_bus(
-                bot=bot,
-                bot_username=BOT_USERNAME,
-                bus_positions=_bus_positions,
-                bus_last_reply=_bus_last_reply,
-                last_activity_time=last_activity_time,
-                name_mention_re=NAME_MENTION_RE,
-                inject_external_message=inject_external_message,
-                ask_openai=ask_openai,
-                ask_agent=ask_agent,
-                clean_openai_reply=clean_openai_reply,
-                mark_bot_replied=mark_bot_replied,
-                parse_mode=ParseMode.HTML,
-                messages_since_bot_reply=messages_since_bot_reply,
-                bot_unmentioned_count=bot_unmentioned_count,
-                last_bot_reply_time=last_bot_reply_time,
-                max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
-                recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
-                chat_react_prompt=CHAT_REACT_PROMPT,
-            )
-        )
 
     await dp.start_polling(bot)
 

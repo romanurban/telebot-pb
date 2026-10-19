@@ -122,13 +122,13 @@ These mechanisms only matter when several bot instances share a group chat on th
 
 **Message claiming** — When a non-targeted command (`/meme`, `/fact`, etc.) or a photo is sent, every bot in the group receives it. To avoid duplicate replies, each bot tries to create an atomic lock file in `/tmp/telebot_claims/`. Only the first bot to create the file responds; the rest silently skip. Claim files are cleaned up automatically.
 
-**Bot bus** — The Telegram Bot API does not deliver bot messages to other bots, so bots on the same server cannot see each other's replies through Telegram alone. To solve this, each bot broadcasts its outgoing messages to a shared JSONL file in `/tmp/telebot_bus/` (one file per chat). A background loop polls for new lines every few seconds:
-- All messages from other bots are added to the agent's conversation history, so each bot stays aware of what was said.
-- If a message mentions this bot — by `@username`, bare `username`, or configured name patterns — the bot generates a response and sends it to Telegram.
+**Bot-to-bot messaging** — Since Telegram Bot API 10.0 (May 2026) bots can receive each other's group messages. Setup per bot: in @BotFather open the mini app (**Open** button) → your bot → **Bot Settings** → turn on **Bot to Bot Communication Mode**, and keep **Group Privacy** off. `handlers/bot_messages.py` then decides when to answer another bot and enforces the loop limits Telegram leaves to us:
+- a bot always answers when another bot replies to it (reply-quote) or mentions it;
+- an unaddressed bot message that opens a chain (a nudge, a bot answering a person) gets at most one reacting bot, and none if it is directed at someone else;
+- after 6 bot messages in a row bots go quiet until a person writes or 30 minutes pass;
+- bot-to-bot answers are reply-quotes, so the target bot knows it is being addressed.
 
-To prevent infinite reply loops, bus-triggered replies are flagged so they won't trigger further bus responses. A per-chat cooldown adds a second layer of protection. Bus files are trimmed to 200 lines periodically.
-
-The bus directory is configurable via `BOT_BUS_DIR` env var (default: `/tmp/telebot_bus`).
+Bots also see each other's pictures and react to them via vision (or stay silent if vision fails).
 
 ## Notes
 - The bot uses the OpenAI Agents SDK with MCP tools

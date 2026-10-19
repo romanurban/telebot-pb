@@ -5,7 +5,6 @@ import re
 from datetime import datetime
 
 import agent_client
-import bot_bus
 from aiogram.enums import ParseMode
 from aiogram.types.input_file import BufferedInputFile, FSInputFile
 from bot_context import BotContext
@@ -16,20 +15,18 @@ async def handle_text_message(message, ctx: BotContext):
     if not message.text:
         return
     if message.from_user and message.from_user.is_bot:
-        if ctx.native_bot_to_bot:
-            await bot_messages.handle_bot_text(message, ctx)
+        # Other bots' messages (Bot API 10.0 bot-to-bot delivery)
+        await bot_messages.handle_bot_text(message, ctx)
         return
 
     chat_id = message.chat.id
-    if ctx.native_bot_to_bot:
-        bot_messages.reset_chain(chat_id)
+    bot_messages.reset_chain(chat_id)  # a human wrote: bots may talk again
     username = message.from_user.username or str(message.from_user.id)
 
     inactivity_clear_minutes = 30
     last_time = ctx.last_activity_time.get(chat_id)
     ctx.last_activity_time[chat_id] = datetime.now()
     ctx.messages_since_bot_reply[chat_id] = ctx.messages_since_bot_reply.get(chat_id, 0) + 1
-    ctx.bus_last_reply.pop(chat_id, None)
 
     if last_time and (datetime.now() - last_time).total_seconds() / 60 >= inactivity_clear_minutes:
         agent_client.clear_history(chat_id)
@@ -158,8 +155,6 @@ async def handle_text_message(message, ctx: BotContext):
             ctx.mark_bot_replied(chat_id)
             await message.answer(answer, parse_mode=ParseMode.HTML)
 
-        if answer:
-            bot_bus.broadcast(chat_id, ctx.bot_username, answer)
         ctx.bot_unmentioned_count[chat_id] = 0
         return
 
@@ -238,5 +233,3 @@ async def handle_text_message(message, ctx: BotContext):
         ctx.mark_bot_replied(chat_id)
         await message.answer(answer, parse_mode=ParseMode.HTML)
 
-    if answer:
-        bot_bus.broadcast(chat_id, ctx.bot_username, answer)
