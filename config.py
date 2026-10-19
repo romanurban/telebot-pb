@@ -78,6 +78,8 @@ ACTIVE_START = _parse_time(os.getenv("ACTIVE_START", "10:00"), time(10, 0))
 ACTIVE_END = _parse_time(os.getenv("ACTIVE_END", "21:00"), time(21, 0))
 
 MAX_UNMENTIONED_REPLIES = 3
+# Telegram Bot API 10.0 bot-to-bot delivery instead of the file bus (see handlers/bot_messages.py)
+BOT_TO_BOT_NATIVE = os.getenv("BOT_TO_BOT_NATIVE", "false").lower() in ("true", "1", "yes")
 IMAGE_SEND_CHANCE = float(os.getenv("IMAGE_SEND_CHANCE", 0.3))
 NUDGE_RESET_INTERVAL = 300
 NUDGE_CHECK_INTERVAL = 60

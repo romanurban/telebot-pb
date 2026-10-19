@@ -9,15 +9,20 @@ import bot_bus
 from aiogram.enums import ParseMode
 from aiogram.types.input_file import BufferedInputFile, FSInputFile
 from bot_context import BotContext
+from handlers import bot_messages
 
 
 async def handle_text_message(message, ctx: BotContext):
-    if message.from_user and message.from_user.is_bot:
-        return
     if not message.text:
+        return
+    if message.from_user and message.from_user.is_bot:
+        if ctx.native_bot_to_bot:
+            await bot_messages.handle_bot_text(message, ctx)
         return
 
     chat_id = message.chat.id
+    if ctx.native_bot_to_bot:
+        bot_messages.reset_chain(chat_id)
     username = message.from_user.username or str(message.from_user.id)
 
     inactivity_clear_minutes = 30

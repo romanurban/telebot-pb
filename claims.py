@@ -74,6 +74,19 @@ def try_claim_nudge(chat_id: int, bot_username: str, now: datetime | None = None
         return False
 
 
+def try_claim_key(key: str, bot_username: str) -> bool:
+    """Atomically claim an arbitrary key; True for exactly one bot."""
+    claim_path = os.path.join(CLAIM_DIR, key)
+    try:
+        fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, bot_username.encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        logging.info(f"[claim] {bot_username} LOST claim for key={key}")
+        return False
+
+
 def try_claim_bus_reply(chat_id: int, msg: dict, bot_username: str) -> bool:
     """Atomically claim the right to react (unmentioned) to one bus message.
 

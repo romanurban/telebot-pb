@@ -19,6 +19,7 @@ class BotContext:
     chat_react_prompt: str
     max_unmentioned_replies: int
     recent_activity_seconds: int
+    native_bot_to_bot: bool = False
 
     # ── Mutable state dicts (shared references) ────────────────────────
     last_activity_time: dict[int, Any] = field(default_factory=dict)

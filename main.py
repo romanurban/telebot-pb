@@ -24,6 +24,7 @@ from nudge import nudge_inactive_chats as run_nudge_loop, get_nudge_prompt as bu
 from bot_context import BotContext
 from handlers.messages import handle_text_message
 from handlers.photos import handle_photo_message
+from handlers import bot_messages
 import base64
 from tempfile import NamedTemporaryFile
 import aiohttp
@@ -46,6 +47,7 @@ from config import (
     IMAGE_DEFAULT_PROMPT,
     CHAT_REACT_PROMPT,
     IMAGE_GEN_INPUT_PROMPT,
+    BOT_TO_BOT_NATIVE,
     NAME_MENTION_RE,
     FIRST_NUDGE_PROMPT,
     FIRST_NUDGE_START,
@@ -523,6 +525,7 @@ def _get_bot_ctx() -> BotContext:
             chat_react_prompt=CHAT_REACT_PROMPT,
             max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
             recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
+            native_bot_to_bot=BOT_TO_BOT_NATIVE,
             last_activity_time=last_activity_time,
             messages_since_bot_reply=messages_since_bot_reply,
             bot_unmentioned_count=bot_unmentioned_count,
@@ -707,7 +710,7 @@ async def generate_image_from_observation(observation: str, chat_id: int | None 
             return None
         logging.info(f"[image-gen] prompt: {prompt!r}")
         image = await fetch_pollinations_image(prompt)
-        if image and chat_id is not None:
+        if image and chat_id is not None and not BOT_TO_BOT_NATIVE:  # natively, bots see the photo itself
             bot_bus.broadcast(chat_id, BOT_USERNAME, f"[прислал картинку: {prompt}]", via_bus=True)
         return image
     except Exception as e:
@@ -767,6 +770,8 @@ def mark_bot_replied(chat_id):
     last_activity_time[chat_id] = now
     last_bot_reply_time[chat_id] = now
     messages_since_bot_reply[chat_id] = 0
+    if BOT_TO_BOT_NATIVE:
+        bot_messages.count_bot_message(chat_id)  # our own messages aren't delivered back to us
     save_shared_last_activity(last_activity_time)
     save_shared_bot_unmentioned(bot_unmentioned_count)
 
@@ -824,28 +829,31 @@ async def startup() -> None:
     # Start background tasks
     asyncio.create_task(nudge_inactive_chats())
     asyncio.create_task(periodic_history_save())
-    asyncio.create_task(
-        poll_bot_bus(
-            bot=bot,
-            bot_username=BOT_USERNAME,
-            bus_positions=_bus_positions,
-            bus_last_reply=_bus_last_reply,
-            last_activity_time=last_activity_time,
-            name_mention_re=NAME_MENTION_RE,
-            inject_external_message=inject_external_message,
-            ask_openai=ask_openai,
-            ask_agent=ask_agent,
-            clean_openai_reply=clean_openai_reply,
-            mark_bot_replied=mark_bot_replied,
-            parse_mode=ParseMode.HTML,
-            messages_since_bot_reply=messages_since_bot_reply,
-            bot_unmentioned_count=bot_unmentioned_count,
-            last_bot_reply_time=last_bot_reply_time,
-            max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
-            recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
-            chat_react_prompt=CHAT_REACT_PROMPT,
+    if BOT_TO_BOT_NATIVE:
+        logging.info("[startup] native bot-to-bot mode: bus poll loop disabled")
+    else:
+        asyncio.create_task(
+            poll_bot_bus(
+                bot=bot,
+                bot_username=BOT_USERNAME,
+                bus_positions=_bus_positions,
+                bus_last_reply=_bus_last_reply,
+                last_activity_time=last_activity_time,
+                name_mention_re=NAME_MENTION_RE,
+                inject_external_message=inject_external_message,
+                ask_openai=ask_openai,
+                ask_agent=ask_agent,
+                clean_openai_reply=clean_openai_reply,
+                mark_bot_replied=mark_bot_replied,
+                parse_mode=ParseMode.HTML,
+                messages_since_bot_reply=messages_since_bot_reply,
+                bot_unmentioned_count=bot_unmentioned_count,
+                last_bot_reply_time=last_bot_reply_time,
+                max_unmentioned_replies=MAX_UNMENTIONED_REPLIES,
+                recent_activity_seconds=RECENT_ACTIVITY_SECONDS,
+                chat_react_prompt=CHAT_REACT_PROMPT,
+            )
         )
-    )
 
     await dp.start_polling(bot)
 

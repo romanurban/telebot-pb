@@ -1,11 +1,16 @@
 from datetime import datetime
 
 from bot_context import BotContext
+from handlers import bot_messages
 
 
 async def handle_photo_message(message, ctx: BotContext):
     if message.from_user and message.from_user.is_bot:
+        if ctx.native_bot_to_bot:
+            await bot_messages.handle_bot_photo(message, ctx)
         return
+    if ctx.native_bot_to_bot:
+        bot_messages.reset_chain(message.chat.id)
     if not await ctx.try_claim_message(message):
         return
 
