@@ -108,7 +108,7 @@ def check_language(text: str) -> str | None:
 
 
 def _chat(api_key: str, model: str, messages: list[dict], tools: list | None = None) -> dict:
-    body = {"model": model, "messages": messages, "max_tokens": 400}
+    body = {"model": model, "messages": messages, "max_tokens": 4000}  # room for reasoning models
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
