@@ -8,6 +8,9 @@ limits Telegram requires us to implement ourselves:
 * a bot always answers when a bot replies to it or mentions it;
 * an unaddressed bot message (e.g. a nudge) gets at most ONE reacting bot,
   and only when it opens a chain;
+* each chain gets a random length cap between MIN_CHAIN and MAX_CHAIN, and an
+  addressed bot sometimes just doesn't answer (DROP_CHANCE), so threads fizzle
+  out at natural, varying lengths;
 * at most MAX_CHAIN bot messages in a row, then bots stay silent until a
   human writes or CHAIN_COOLDOWN passes;
 * at least MIN_REPLY_GAP seconds between this bot's replies to bots.
@@ -30,7 +33,9 @@ import claims
 from aiogram.enums import ParseMode
 from message_filter import clean_self_mentions, validate_bot_interaction
 
-MAX_CHAIN = 6               # bot messages in a row before the chain is cut
+MAX_CHAIN = 6               # bot messages in a row before the chain is cut (upper bound)
+MIN_CHAIN = 2               # shortest random cap: an opener plus one reaction
+DROP_CHANCE = 0.2           # an addressed bot sometimes simply doesn't answer (from the 3rd message on)
 CHAIN_COOLDOWN = 30 * 60    # seconds of silence after a cut; also resets a stale chain
 MIN_REPLY_GAP = 5           # seconds between this bot's replies to other bots (MAX_CHAIN is the real loop guard)
 REPLY_DELAY = (10, 40)      # seconds a bot "types" before answering another bot (includes LLM time)
@@ -46,19 +51,21 @@ CLOSING_HINT = (
 )
 
 _chain_len: dict[int, int] = {}
+_chain_cap: dict[int, int] = {}
 _chain_last_ts: dict[int, float] = {}
 _blocked_until: dict[int, float] = {}
 _last_b2b_reply: dict[int, float] = {}
 
 
 def reset_state() -> None:
-    for d in (_chain_len, _chain_last_ts, _blocked_until, _last_b2b_reply):
+    for d in (_chain_len, _chain_cap, _chain_last_ts, _blocked_until, _last_b2b_reply):
         d.clear()
 
 
 def reset_chain(chat_id: int) -> None:
     """A human wrote: bots may talk again."""
     _chain_len[chat_id] = 0
+    _chain_cap.pop(chat_id, None)
     _blocked_until.pop(chat_id, None)
 
 
@@ -68,8 +75,14 @@ def count_bot_message(chat_id: int, now: float | None = None) -> int:
     if now - _chain_last_ts.get(chat_id, 0) > CHAIN_COOLDOWN:
         _chain_len[chat_id] = 0  # stale chain: a new conversation (e.g. a nudge)
     _chain_last_ts[chat_id] = now
+    if _chain_len.get(chat_id, 0) == 0 or chat_id not in _chain_cap:
+        _chain_cap[chat_id] = random.randint(MIN_CHAIN, MAX_CHAIN)  # new chain: pick its length
     _chain_len[chat_id] = _chain_len.get(chat_id, 0) + 1
     return _chain_len[chat_id]
+
+
+def chain_cap(chat_id: int) -> int:
+    return _chain_cap.get(chat_id, MAX_CHAIN)
 
 
 def is_addressed(message, bot_username: str, name_mention_re=None) -> bool:
@@ -103,13 +116,17 @@ def may_react(message, bot_username: str, *, addressed: bool, now: float | None 
 
     if now < _blocked_until.get(chat_id, 0):
         return False
-    if chain >= MAX_CHAIN:
+    if chain >= chain_cap(chat_id):
         _blocked_until[chat_id] = now + CHAIN_COOLDOWN
-        logging.info(f"[b2b] {chain} bot messages in a row in {chat_id}: going quiet")
+        logging.info(f"[b2b] {chain} bot messages in a row in {chat_id} (cap {chain_cap(chat_id)}): going quiet")
         return False
     if now - _last_b2b_reply.get(chat_id, 0) < MIN_REPLY_GAP:
         return False
     if addressed:
+        # People don't answer everything: sometimes the thread just ends here.
+        if chain >= 3 and random.random() < DROP_CHANCE:
+            logging.info(f"[b2b] letting the thread in {chat_id} end after {chain} messages")
+            return False
         return True
     # Unaddressed: only a chain opener (nudge / bot answering a human) that isn't
     # directed at someone else, and only one bot joins.
@@ -121,7 +138,7 @@ def may_react(message, bot_username: str, *, addressed: bool, now: float | None 
 
 def is_last_in_chain(chat_id: int) -> bool:
     """Our reply would be the last one before the chain cap."""
-    return _chain_len.get(chat_id, 0) >= MAX_CHAIN - 1
+    return _chain_len.get(chat_id, 0) >= chain_cap(chat_id) - 1
 
 
 async def _answer(message, ctx, sender: str, prompt: str, addressed: bool) -> str:

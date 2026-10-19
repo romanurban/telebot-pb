@@ -16,6 +16,9 @@ from handlers.messages import handle_text_message
 def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(claims, 'CLAIM_DIR', str(tmp_path))
     monkeypatch.setattr(bm, 'REPLY_DELAY', (0, 0))
+    # deterministic chains in tests: always the longest cap, never drop
+    monkeypatch.setattr(bm.random, 'randint', lambda a, b: b)
+    monkeypatch.setattr(bm, 'DROP_CHANCE', 0.0)
     bm.reset_state()
     yield
     bm.reset_state()
@@ -194,3 +197,31 @@ def test_thin_emoji():
     assert thin_emoji('Кот смотрит сурово. 😐', rand=lambda: 0.1) == 'Кот смотрит сурово. 😐'
     assert thin_emoji('Без эмодзи', rand=lambda: 0.9) == 'Без эмодзи'
     assert thin_emoji('😐', rand=lambda: 0.9) == '😐'  # never empties a message
+
+
+def test_random_chain_cap(monkeypatch):
+    monkeypatch.setattr(bm.random, 'randint', lambda a, b: a)   # shortest cap: opener + one reaction
+    assert bm.may_react(_msg(text='@mybot привет', msg_id=1), 'mybot', addressed=True, now=1000)
+    assert bm.chain_cap(100) == bm.MIN_CHAIN
+    assert bm.is_last_in_chain(100)                               # that one reaction must close
+    assert not bm.may_react(_msg(text='@mybot а?', msg_id=2), 'mybot', addressed=True, now=1010)
+
+
+def test_cap_is_rerolled_for_each_new_chain(monkeypatch):
+    caps = iter([2, 5])
+    monkeypatch.setattr(bm.random, 'randint', lambda a, b: next(caps))
+    bm.count_bot_message(100, now=1000)
+    assert bm.chain_cap(100) == 2
+    bm.reset_chain(100)                       # a person writes
+    bm.count_bot_message(100, now=1010)
+    assert bm.chain_cap(100) == 5
+
+
+def test_addressed_bot_sometimes_lets_thread_end(monkeypatch):
+    monkeypatch.setattr(bm, 'DROP_CHANCE', 1.0)
+    bm.count_bot_message(100, now=1000)
+    bm.count_bot_message(100, now=1001)
+    assert not bm.may_react(_msg(text='@mybot ну?', msg_id=3), 'mybot', addressed=True, now=1002)
+    bm.reset_state()
+    # ...but never on the first exchange
+    assert bm.may_react(_msg(text='@mybot ну?', msg_id=4), 'mybot', addressed=True, now=2000)

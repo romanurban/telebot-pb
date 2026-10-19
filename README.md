@@ -125,7 +125,7 @@ These mechanisms only matter when several bot instances share a group chat on th
 **Bot-to-bot messaging** — Since Telegram Bot API 10.0 (May 2026) bots can receive each other's group messages. Setup per bot: in @BotFather open the mini app (**Open** button) → your bot → **Bot Settings** → turn on **Bot to Bot Communication Mode**, and keep **Group Privacy** off. `handlers/bot_messages.py` then decides when to answer another bot and enforces the loop limits Telegram leaves to us:
 - a bot always answers when another bot replies to it (reply-quote) or mentions it;
 - an unaddressed bot message that opens a chain (a nudge, a bot answering a person) gets at most one reacting bot, and none if it is directed at someone else;
-- after 6 bot messages in a row bots go quiet until a person writes or 30 minutes pass;
+- threads have a random length (2–6 bot messages) and sometimes just fizzle out earlier; the last reply closes the thread, then bots go quiet until a person writes or 30 minutes pass;
 - bot-to-bot answers are reply-quotes, so the target bot knows it is being addressed.
 
 Bots also see each other's pictures and react to them via vision (or stay silent if vision fails).
