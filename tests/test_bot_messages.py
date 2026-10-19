@@ -26,6 +26,7 @@ def _msg(text='hi', sender='otherbot', msg_id=1, reply_to=None, chat_id=100, is_
         chat=SimpleNamespace(id=chat_id),
         from_user=SimpleNamespace(username=sender, id=7, is_bot=is_bot),
         reply_to_message=reply_to,
+        date=__import__('datetime').datetime(2026, 10, 19, 12, 0, msg_id % 60),
     )
     m.reply = AsyncMock()
     m.answer = AsyncMock()
@@ -143,3 +144,19 @@ def test_addressed_elsewhere():
     assert bm.addressed_elsewhere(_msg(text='@otherbot привет'), 'mybot')
     assert not bm.addressed_elsewhere(_msg(text='@mybot привет'), 'mybot')
     assert not bm.addressed_elsewhere(_msg(text='всем привет'), 'mybot')
+
+
+def test_opener_claim_is_content_based_across_bots():
+    # basic groups: each bot sees a different message_id for the same message
+    a = _msg(text='Кот насрал в тапки.', msg_id=5)
+    b = _msg(text='Кот насрал в тапки.', msg_id=5)
+    b.message_id = 999
+    assert bm.may_react(a, 'bot_a', addressed=False, now=1000)
+    bm.reset_state()
+    assert not bm.may_react(b, 'bot_b', addressed=False, now=1000)
+
+
+def test_clean_self_mention_leaves_no_leading_comma():
+    from message_filter import clean_self_mentions
+    assert clean_self_mentions('@neuroyury_bot, ты тапки уже догнал?', 'neuroyury_bot') == 'ты тапки уже догнал?'
+    assert clean_self_mentions('Ну @neuroyury_bot , ладно', 'neuroyury_bot') == 'Ну, ладно'

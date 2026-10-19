@@ -19,8 +19,10 @@ def clean_self_mentions(message: str, bot_username: str) -> str:
     mention_pattern = rf'@{re.escape(bot_username)}\b'
     cleaned = re.sub(mention_pattern, '', message, flags=re.IGNORECASE)
     
-    # Clean up extra whitespace left by removal
+    # Clean up extra whitespace and punctuation left by removal ("@me, ты..." -> "ты...")
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    cleaned = re.sub(r'^[\s,.:;!—–-]+', '', cleaned)
+    cleaned = re.sub(r'\s+([,.!?])', r'\1', cleaned)
     
     # If message becomes too short or meaningless, return original
     if len(cleaned) < 5:

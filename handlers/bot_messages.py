@@ -102,7 +102,8 @@ def may_react(message, bot_username: str, *, addressed: bool, now: float | None 
     # directed at someone else, and only one bot joins.
     if chain != 1 or addressed_elsewhere(message, bot_username):
         return False
-    return claims.try_claim_key(f"tg_{chat_id}_{message.message_id}", bot_username)
+    # Content-based key: in basic groups message_id differs per bot account.
+    return claims.try_claim_key(f"b2b_{claims.claim_key(message)}", bot_username)
 
 
 async def _answer(message, ctx, sender: str, prompt: str, addressed: bool) -> str:
