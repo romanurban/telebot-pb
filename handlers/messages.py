@@ -25,6 +25,7 @@ async def handle_text_message(message, ctx: BotContext):
     chat_id = message.chat.id
     bot_messages.reset_chain(chat_id)  # a human wrote: bots may talk again
     username = message.from_user.username or str(message.from_user.id)
+    logging.info(f"[in] {chat_id} {username}: {message.text.replace(chr(10), ' / ')[:500]}")
 
     inactivity_clear_minutes = 30
     last_time = ctx.last_activity_time.get(chat_id)
@@ -115,7 +116,7 @@ async def handle_text_message(message, ctx: BotContext):
     tool_choice = 'generate_voice' if (mentioned and ctx.needs_voice_tool(message.text)) else None
 
     if mentioned:
-        prompt = re.sub(re.escape(mention_tag), '', message.text, count=1, flags=re.IGNORECASE).strip()
+        prompt = message.text.strip()  # keep our @handle: cutting it out left gaps the model copied
         answer = await ctx.ask_openai(prompt, username=username, chat_id=chat_id, tool_choice=tool_choice)
         if not answer:
             return  # LLM failed: say nothing rather than post an error

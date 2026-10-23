@@ -4,7 +4,11 @@ from shared_state import load_shared_last_activity, save_shared_last_activity, l
 import random
 from datetime import datetime
 
+import json
+import os
+
 import agent_client
+import claims
 from claims import try_claim_nudge
 from message_filter import clean_self_mentions, validate_bot_interaction
 
@@ -17,17 +21,60 @@ NUDGE_TASK_FRAME = (
     "Если задача написана как реплика (например, с @упоминанием другого бота), "
     "это пример того, что ТЫ пишешь в чат от своего лица, а не сообщение тебе. "
     "Без конструкций «не X, а Y» и сравнений «X — как Y». "
+    "Сообщение должно быть понятной законченной мыслью, которую человек сразу поймёт без пояснений. "
     "Выдай только готовое сообщение для чата.\n\n"
     "Задача: {prompt}"
 )
+RECENT_FRAME = (
+    "\n\nНедавно в чате уже писали (ты или другие участники):\n{items}\n"
+    "Не повторяй эти темы, факты, события и шутки — выбери что-то другое. "
+    "Не бери и ту же тему другими словами: если недавно было про погоду, холод, район, автобусы — "
+    "пиши о чём-то совсем другом. "
+    "Если задача ведёт к тому же самому (тот же факт дня, та же тема), возьми из результата инструмента другое "
+    "или выбери другую тему сам."
+)
+RECENT_KEEP = 10
 
 
-def build_nudge_messages(prompt):
+def _recent_file(chat_id: int) -> str:
+    return os.path.join(claims.NUDGE_DIR, f"{chat_id}.recent.json")
+
+
+def load_recent_nudges(chat_id: int) -> list[str]:
+    """Openers posted in this chat lately, by any bot (the history is cleared before a nudge)."""
+    try:
+        with open(_recent_file(chat_id), encoding="utf-8") as f:
+            items = json.load(f)
+        return [str(x) for x in items][-RECENT_KEEP:]
+    except (OSError, ValueError):
+        return []
+
+
+def remember_nudge(chat_id: int, text: str) -> None:
+    if not text:
+        return
+    items = load_recent_nudges(chat_id) + [text.strip()[:300]]
+    try:
+        os.makedirs(claims.NUDGE_DIR, exist_ok=True)
+        tmp = _recent_file(chat_id) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(items[-RECENT_KEEP:], f, ensure_ascii=False)
+        os.replace(tmp, _recent_file(chat_id))
+    except OSError as e:
+        logging.warning(f"[nudge] could not save recent nudges: {e}")
+
+
+def build_nudge_messages(prompt, recent=None):
     """Wrap a nudge prompt so the model executes it instead of replying to it.
 
     Kept as a system message so it is never stored in the chat history.
+    ``recent`` lists openers already posted, so the same fact of the day
+    doesn't come back a few hours later.
     """
-    return [{"role": "system", "content": NUDGE_TASK_FRAME.format(prompt=prompt)}]
+    content = NUDGE_TASK_FRAME.format(prompt=prompt)
+    if recent:
+        content += RECENT_FRAME.format(items="\n".join(f"- {r}" for r in recent))
+    return [{"role": "system", "content": content}]
 
 
 def get_random_nudge_prompt(nudge_system_prompts, nudge_prompt_history, history_len):
@@ -89,9 +136,10 @@ async def nudge_inactive_chats(
 ):
     if force and force_chat_id is not None and force_message is not None:
         system_prompt = get_nudge_prompt_for_chat(force_chat_id)
-        message_list = build_nudge_messages(system_prompt)
+        message_list = build_nudge_messages(system_prompt, load_recent_nudges(force_chat_id))
         raw_answer = await ask_agent(message_list, chat_id=force_chat_id)
         answer = clean_openai_reply(raw_answer)
+        remember_nudge(force_chat_id, answer)
         mark_bot_replied(force_chat_id)
         await send_nudge_with_image(force_message, force_chat_id, answer, is_message=True)
         return
@@ -104,13 +152,17 @@ async def nudge_inactive_chats(
         f"NUDGE_MINUTES=dynamic, Active hours: {active_start}-{active_end} {bot_timezone}"
     )
 
+    quiet_logged = False
     while True:
         try:
             current_time = datetime.now(bot_timezone).time()
             if not (active_start <= current_time <= active_end):
-                logging.info(f"[nudge] Outside active hours (current: {current_time}), sleeping...")
+                if not quiet_logged:  # log the transition once, not every minute all night
+                    logging.info(f"[nudge] Outside active hours ({current_time:%H:%M}), sleeping until {active_start}")
+                    quiet_logged = True
                 await asyncio.sleep(nudge_check_interval)
                 continue
+            quiet_logged = False
 
             nudge_minutes = get_nudge_minutes()
 
@@ -150,13 +202,20 @@ async def nudge_inactive_chats(
                 if fresh and (datetime.now() - fresh).total_seconds() / 60 < nudge_minutes:
                     continue
 
+                # Let another bot open the next thread if we opened the last one.
+                if claims.last_nudger(chat_id) == bot_username:
+                    await asyncio.sleep(random.uniform(90, 240))
+                    fresh = load_shared_last_activity().get(chat_id)
+                    if fresh and (datetime.now() - fresh).total_seconds() / 60 < nudge_minutes:
+                        continue
+
                 if not try_claim_nudge(chat_id, bot_username):
                     continue
 
                 try:
                     agent_client.clear_history(chat_id)
                     system_prompt = get_nudge_prompt_for_chat(chat_id)
-                    message_list = build_nudge_messages(system_prompt)
+                    message_list = build_nudge_messages(system_prompt, load_recent_nudges(chat_id))
                     raw_answer = await ask_agent(message_list, chat_id=chat_id)
                     answer = clean_openai_reply(raw_answer)
                     
@@ -165,7 +224,8 @@ async def nudge_inactive_chats(
                     if not validate_bot_interaction(answer, bot_username):
                         logging.info(f"[nudge] Skipping invalid message in chat {chat_id}")
                         continue
-                        
+
+                    remember_nudge(chat_id, answer)
                     mark_bot_replied(chat_id)
                     await send_nudge_with_image(bot, chat_id, answer, caption="", is_message=False)
                 except Exception as e:

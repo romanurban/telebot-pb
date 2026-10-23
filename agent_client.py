@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from agents import (
     Agent,
     Runner,
@@ -23,7 +24,10 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 USE_OPENROUTER = bool(OPENROUTER_API_KEY and OPENROUTER_MODEL)
 
-HISTORY_DIR = "chat_history"
+# One history directory per bot: all bots run from the same checkout, and a
+# shared chat_history/<chat_id>.json made them overwrite each other's memory.
+HISTORY_DIR = os.path.join("chat_history", os.getenv("BOT_USERNAME") or "default")
+NEUTRAL_INSTRUCTIONS = "Выполни задачу точно. Верни только результат, без пояснений."
 MAX_HISTORY = 20  # Keep last N messages (user + assistant) per chat
 
 if USE_OPENROUTER:
@@ -41,15 +45,23 @@ _mcp_server: MCPServerSse | None = None
 _system_history: list[dict] = []
 _histories: dict[int, list[dict]] = {}  # chat_id -> last N user messages
 
+# Optional reply check set by main: (reply, message_being_answered) -> reason or None.
+# A flagged reply is regenerated once with the reason; if it fails again the bot stays silent.
+reply_checker = None
 
-def _make_agent(bot_name: str, system_prompt: str, model_name: str) -> Agent:
+
+def _make_agent(bot_name: str, system_prompt: str, model_name: str, *, with_tools: bool = True) -> Agent:
     return Agent(
         name=bot_name,
         instructions=system_prompt,
         tools=[],
-        mcp_servers=[_mcp_server] if _mcp_server is not None else [],
+        mcp_servers=[_mcp_server] if (with_tools and _mcp_server is not None) else [],
         model=model_name,
     )
+
+
+def _current_model() -> str:
+    return OPENROUTER_MODEL if USE_OPENROUTER else OPENAI_MODEL
 
 
 def _should_try_openrouter_fallback(err: Exception) -> bool:
@@ -144,11 +156,7 @@ async def create_thread_with_system_prompt(
         client_session_timeout_seconds=30,
     )
     await _mcp_server.connect()
-    _agent = _make_agent(
-        bot_name,
-        system_prompt,
-        OPENROUTER_MODEL if USE_OPENROUTER else OPENAI_MODEL,
-    )
+    _agent = _make_agent(bot_name, system_prompt, _current_model())
     _system_history = [{"role": "system", "content": system_prompt}]
 
 
@@ -188,33 +196,30 @@ async def ask_agent(contents: list[dict], chat_id: int, *, tool_choice: str | No
             api_history.append(msg)
 
     api_history = _normalize_history(api_history)
-    print(f"[ask_agent] Chat {chat_id}: sending {len(api_history)} messages")
+    logging.debug(f"[ask_agent] Chat {chat_id}: sending {len(api_history)} messages")
 
-    run_cfg_kwargs = {}
-    if _openrouter_provider:
-        run_cfg_kwargs["model_provider"] = _openrouter_provider
-    if tool_choice:
-        run_cfg_kwargs["model_settings"] = ModelSettings(tool_choice=tool_choice)
-    run_cfg = RunConfig(**run_cfg_kwargs) if run_cfg_kwargs else None
-    try:
-        result = await Runner.run(_agent, api_history, run_config=run_cfg)
-    except Exception as first_err:
-        if USE_OPENROUTER and OPENROUTER_FALLBACK_MODEL and _should_try_openrouter_fallback(first_err):
-            print(f"[ask_agent] Chat {chat_id}: primary model failed ({first_err!r}), trying fallback {OPENROUTER_FALLBACK_MODEL}...")
-            fallback_agent = _make_agent(_agent.name, _system_history[0]["content"], OPENROUTER_FALLBACK_MODEL)
-            result = await Runner.run(fallback_agent, api_history, run_config=run_cfg)
-        else:
-            if _mcp_server is None:
-                raise
-            print(f"[ask_agent] Chat {chat_id}: Runner failed ({first_err!r}), reconnecting MCP...")
-            try:
-                await _mcp_server.cleanup()
-            except Exception:
-                pass
-            await _mcp_server.connect()
-            result = await Runner.run(_agent, api_history, run_config=run_cfg)
+    reply = await _run(_agent, _system_history[0]["content"], api_history, f"chat {chat_id}",
+                       tool_choice=tool_choice, with_tools=True)
 
-    reply = str(result.final_output)
+    if reply_checker is not None:
+        answered = _answered_text(contents)
+        problem = reply_checker(reply, answered)
+        if problem:
+            logging.info(f"[check] chat {chat_id}: {problem}; retrying. Rejected: {reply[:200]!r}")
+            retry_history = api_history + _normalize_history([{
+                "role": "system",
+                "content": (
+                    f"Твой вариант ответа «{reply}» не годится: {problem}. "
+                    "Напиши заново: другая мысль, свои слова, коротко, только кириллицей."
+                ),
+            }])
+            reply = await _run(_agent, _system_history[0]["content"], retry_history, f"chat {chat_id} retry",
+                               tool_choice=tool_choice, with_tools=True)
+            problem = reply_checker(reply, answered)
+            if problem:
+                logging.info(f"[check] chat {chat_id}: still {problem}; staying silent. Rejected: {reply[:200]!r}")
+                _histories[chat_id] = history[-MAX_HISTORY:]
+                return ""
 
     # Store assistant response in history so model knows what it already said
     history.append({"role": "assistant", "content": reply})
@@ -223,6 +228,75 @@ async def ask_agent(contents: list[dict], chat_id: int, *, tool_choice: str | No
     _histories[chat_id] = history[-MAX_HISTORY:]
 
     return reply
+
+
+async def _run(agent: Agent, instructions: str, api_history: list[dict], label: str, *,
+               tool_choice: str | None = None, with_tools: bool) -> str:
+    """Run ``agent`` on ``api_history`` with the OpenRouter fallback / MCP reconnect."""
+    run_cfg_kwargs = {}
+    if _openrouter_provider:
+        run_cfg_kwargs["model_provider"] = _openrouter_provider
+    if tool_choice:
+        run_cfg_kwargs["model_settings"] = ModelSettings(tool_choice=tool_choice)
+    run_cfg = RunConfig(**run_cfg_kwargs) if run_cfg_kwargs else None
+    try:
+        result = await Runner.run(agent, api_history, run_config=run_cfg)
+    except Exception as first_err:
+        if USE_OPENROUTER and OPENROUTER_FALLBACK_MODEL and _should_try_openrouter_fallback(first_err):
+            logging.warning(f"[ask_agent] {label}: primary model failed ({first_err!r}), trying fallback {OPENROUTER_FALLBACK_MODEL}")
+            fallback_agent = _make_agent(agent.name, instructions, OPENROUTER_FALLBACK_MODEL, with_tools=with_tools)
+            result = await Runner.run(fallback_agent, api_history, run_config=run_cfg)
+        else:
+            if _mcp_server is None or not with_tools:
+                raise
+            logging.warning(f"[ask_agent] {label}: Runner failed ({first_err!r}), reconnecting MCP")
+            try:
+                await _mcp_server.cleanup()
+            except Exception:
+                pass
+            await _mcp_server.connect()
+            result = await Runner.run(agent, api_history, run_config=run_cfg)
+    return str(result.final_output)
+
+
+async def ask_stateless(instruction: str, text: str = "", *, persona: bool = False) -> str:
+    """One-off model call that never touches any chat history.
+
+    ``persona=True`` keeps the bot's system prompt (for restyling a caption);
+    otherwise a neutral instruction is used, so the persona can't refuse or
+    answer in character (that is how a refusal once became an image prompt).
+    """
+    if _agent is None:
+        raise RuntimeError("Agent not initialized")
+    instructions = _system_history[0]["content"] if (persona and _system_history) else NEUTRAL_INSTRUCTIONS
+    agent = _make_agent(_agent.name, instructions, _current_model(), with_tools=False)
+    messages = [{"role": "system", "content": instruction}]
+    if text:
+        messages.append({"role": "user", "content": text})
+    return await _run(agent, instructions, _normalize_history(messages), "stateless", with_tools=False)
+
+
+async def shutdown() -> None:
+    """Close the MCP connection from the task that opened it (avoids the anyio
+    'exit cancel scope in a different task' traceback on every restart)."""
+    global _mcp_server
+    if _mcp_server is None:
+        return
+    try:
+        await _mcp_server.cleanup()
+    except BaseException as e:  # noqa: BLE001 - best effort during shutdown
+        logging.debug(f"[shutdown] MCP cleanup: {e!r}")
+    _mcp_server = None
+
+
+def _answered_text(contents: list[dict]) -> str | None:
+    """Text of the chat message this call answers ("sender: text" -> "text"), if any."""
+    for msg in reversed(contents):
+        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+            text = msg["content"]
+            head, sep, tail = text.partition(": ")
+            return tail if sep and " " not in head else text
+    return None
 
 
 # === History Management ===
@@ -246,8 +320,8 @@ def save_histories_to_disk() -> None:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(history, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[save_histories] Error saving chat {chat_id}: {e}")
-    print(f"[save_histories] Saved {len(_histories)} chats")
+            logging.error(f"[save_histories] Error saving chat {chat_id}: {e}")
+    logging.debug(f"[save_histories] Saved {len(_histories)} chats")
 
 
 def inject_external_message(chat_id: int, username: str, text: str) -> None:
@@ -272,5 +346,5 @@ def load_histories_from_disk() -> None:
             clean = [m for m in raw if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
             _histories[chat_id] = clean[-MAX_HISTORY:]
         except (ValueError, json.JSONDecodeError) as e:
-            print(f"[load_histories] Error loading {filename}: {e}")
-    print(f"[load_histories] Loaded {len(_histories)} chats")
+            logging.error(f"[load_histories] Error loading {filename}: {e}")
+    logging.info(f"[load_histories] Loaded {len(_histories)} chats from {HISTORY_DIR}")

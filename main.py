@@ -4,6 +4,7 @@ import random
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message, ReactionTypeEmoji
 from aiogram.enums import ParseMode
+from aiogram.client.session.middlewares.base import BaseRequestMiddleware
 from aiogram import F
 import asyncio
 import dotenv
@@ -22,7 +23,7 @@ from bot_context import BotContext
 from handlers.messages import handle_text_message
 from handlers.photos import handle_photo_message
 from handlers import bot_messages
-from message_filter import thin_emoji
+from message_filter import thin_emoji, tidy_reply, fix_mentions, echo_problem, latin_problem
 import base64
 from tempfile import NamedTemporaryFile
 import aiohttp
@@ -46,6 +47,7 @@ from config import (
     CHAT_REACT_PROMPT,
     IMAGE_GEN_INPUT_PROMPT,
     NAME_MENTION_RE,
+    CYRILLIC_ONLY,
     FIRST_NUDGE_PROMPT,
     FIRST_NUDGE_START,
     FIRST_NUDGE_END,
@@ -86,10 +88,53 @@ def _needs_voice_tool(text: str) -> bool:
 # === GLOBAL STATE ===
 # Note: chat histories now managed in agent_client._histories
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+# Per-request noise: one line per poll / HTTP call drowned the conversation.
+for _noisy in ("aiogram.event", "httpx", "openai._base_client", "mcp.client.sse"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
+
+
+class OutgoingLog(BaseRequestMiddleware):
+    """Log every message the bot posts, so a conversation can be reviewed later."""
+
+    async def __call__(self, make_request, bot, method):
+        text = getattr(method, "text", None) or getattr(method, "caption", None)
+        kind = type(method).__name__
+        if kind.startswith("Send") and kind != "SendChatAction":
+            chat_id = getattr(method, "chat_id", "?")
+            logging.info(f"[out] {chat_id} {kind}: {(text or '').replace(chr(10), ' / ')[:500]}")
+        return await make_request(bot, method)
+
+
+bot.session.middleware(OutgoingLog())
+
+
+PHOTO_MARK = "прислал(а) в чат картинку"
+
+
+def check_reply(reply: str, answered: str | None) -> str | None:
+    """Mechanical guard for what prompt rules alone don't stop on the free models."""
+    import re
+    if re.search(r"^\s*\{|https?://|/tmp/", reply or ""):
+        return None  # tool payload (meme URL, image JSON, voice file): not chat prose
+    text = clean_openai_reply(reply)
+    if answered and PHOTO_MARK in answered:
+        answered = None  # reusing words of a picture description is expected
+    if CYRILLIC_ONLY:
+        problem = latin_problem(text)
+        if problem:
+            return problem
+    return echo_problem(text, answered)
+
+
+agent_client.reply_checker = check_reply
 
 
 def validate_environment():
@@ -170,34 +215,47 @@ async def ask_openai(
     """
     # Format the message with username prefix
     formatted_prompt = f"{username}: {prompt}"
-    print(f"[ask_openai] Sending to OpenAI: {formatted_prompt}")  # Debug print
+    logging.debug(f"[ask_openai] {chat_id} <- {formatted_prompt}")
     return await ask_openai_contents(chat_id, formatted_prompt, role=role, tool_choice=tool_choice)
+
+
+# The vision model only describes. The caption is someone's comment on the
+# picture, not an instruction for the describer (it used to be passed as the
+# prompt, so "нормальный прикол" produced "Да, отличный прикол! 😄").
+VISION_DESCRIBE_PROMPT = (
+    "Опиши по-русски нейтрально и конкретно, что на изображении: объекты, люди, животные, "
+    "обстановка, и дословно весь видимый текст. Без оценок, шуток и форматирования, до 120 слов."
+)
+
+
+def _photo_message_text(caption: str | None, sender: str | None, description: str | None = None) -> str:
+    who = sender or "кто-то"
+    parts = [f"{who} {PHOTO_MARK}."]
+    if description:
+        parts.append(f"На картинке: {description}")
+    if caption:
+        parts.append(f"Подпись: {caption}")
+    parts.append(IMAGE_DEFAULT_PROMPT)
+    return "\n".join(parts)
 
 
 async def ask_openai_image(
     image_bytes: bytes,
-    prompt: str = IMAGE_DEFAULT_PROMPT,
+    caption: str | None = None,
     *,
     chat_id: int,
+    sender: str | None = None,
 ) -> str:
-    """Upload an image and include it with the prompt for the assistant."""
+    """Let the bot react to a picture (and its caption, if any)."""
     if USE_OPENROUTER:
         tmp_file = None
         try:
             with NamedTemporaryFile(delete=False, dir="/tmp", suffix=".jpg") as f:
                 f.write(image_bytes)
                 tmp_file = f.name
-            logging.info(f"[ask_openai_image] OpenRouter path: saved {len(image_bytes)} bytes to {tmp_file}")
             # Call MCP tool directly (agent can't invoke MCP tools via OpenRouter)
-            description = await analyze_image_via_mcp(tmp_file, prompt)
-            logging.info(f"[ask_openai_image] Got vision description, sending to agent...")
-            agent_prompt = (
-                f"User sent a photo. Here is the image description:\n"
-                f"{description}\n\n"
-                f"Original prompt: {prompt}\n"
-                f"Respond naturally based on the image description."
-            )
-            return await ask_openai_contents(chat_id, agent_prompt)
+            description = await analyze_image_via_mcp(tmp_file, VISION_DESCRIBE_PROMPT)
+            return await ask_openai_contents(chat_id, _photo_message_text(caption, sender, description))
         except Exception as e:
             # Couldn't see the image -> stay silent rather than guess or post the error
             logging.error(f"[ask_openai_image] vision failed, not reacting: {e}")
@@ -217,7 +275,7 @@ async def ask_openai_image(
         )
         file_id = file_response.id
         contents = [
-            {"type": "input_text", "text": prompt},
+            {"type": "input_text", "text": _photo_message_text(caption, sender)},
             {"type": "input_image", "file_id": file_id},
         ]
         return await ask_openai_contents(chat_id, contents)
@@ -484,6 +542,22 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
                 pass
         return
 
+    # Picture first, then post it WITH the text as caption: sent separately it
+    # arrived a minute late, after the other bots had already answered the text.
+    image_bytes = None
+    if random.random() < IMAGE_SEND_CHANCE and len(answer) <= 1000:
+        image_bytes = await generate_image_from_observation(answer, chat_id=chat_id)
+    if image_bytes:
+        image_file = BufferedInputFile(image_bytes, filename="observation.png")
+        try:
+            if is_message:
+                await target.answer_photo(image_file, caption=answer, parse_mode=ParseMode.HTML)
+            else:
+                await target.send_photo(chat_id, image_file, caption=answer, parse_mode=ParseMode.HTML)
+            return
+        except Exception as e:
+            logging.error(f"Failed to send nudge image to chat {chat_id}: {e}; sending text only")
+
     try:
         if is_message:
             await target.answer(answer, parse_mode=ParseMode.HTML)
@@ -491,20 +565,6 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
             await target.send_message(chat_id, answer, parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.error(f"Failed to send nudge to chat {chat_id}: {e}")
-
-    if random.random() < IMAGE_SEND_CHANCE:
-        image_bytes = await generate_image_from_observation(answer, chat_id=chat_id)
-        if image_bytes:
-            try:
-                buffer = io.BytesIO(image_bytes)
-                buffer.seek(0)
-                image_file = BufferedInputFile(buffer.getvalue(), filename="observation.png")
-                if is_message:
-                    await target.answer_photo(image_file, caption=caption)
-                else:
-                    await target.send_photo(chat_id, image_file, caption=caption)
-            except Exception as e:
-                logging.error(f"Failed to send nudge image to chat {chat_id}: {e}")
 
 
 _bot_ctx: BotContext | None = None
@@ -609,7 +669,6 @@ async def retrieve_fact() -> str:
 async def analyze_image_via_mcp(image_path: str, prompt: str) -> str:
     """Analyze an image via the MCP tool and return the text description."""
 
-    logging.info(f"[analyze_image_via_mcp] Calling MCP tool with path={image_path}, prompt={prompt!r}")
     async with sse_client(MCP_SERVER_URL) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -619,7 +678,7 @@ async def analyze_image_via_mcp(image_path: str, prompt: str) -> str:
             if not resp.content:
                 raise ValueError("no data returned from analyze_image")
             result = resp.content[0].text.strip()
-            logging.info(f"[analyze_image_via_mcp] Got result ({len(result)} chars): {result[:200]!r}...")
+            logging.info(f"[vision] {result[:300]!r}")
             return result
 
 
@@ -639,12 +698,20 @@ async def generate_voice_file(text: str) -> str:
 
 
 async def style_caption(caption: str, *, chat_id: int) -> str:
-    """Rewrite ``caption`` using the bot's system prompt for style."""
-    prompt = (
-        "Rewrite the following picture caption in your own style, keeping the "
-        f"same meaning:\n{caption}"
-    )
-    return await ask_openai(prompt, chat_id=chat_id)
+    """Rewrite ``caption`` in the bot's style. Stateless: the request itself never
+    lands in the chat history (it used to show up there as a "user" message)."""
+    _ = chat_id
+    try:
+        styled = clean_openai_reply(await agent_client.ask_stateless(
+            "Перепиши подпись к картинке своими словами в своём стиле, сохранив смысл. "
+            "Верни только новую подпись, одной строкой.",
+            caption,
+            persona=True,
+        ))
+    except Exception as e:
+        logging.warning(f"[style_caption] {e}")
+        styled = ""
+    return styled or caption
 
 
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"  # classic endpoint: no key needed (gen.* requires one)
@@ -655,7 +722,7 @@ POLLINATIONS_RETRY_WAIT = 12  # anonymous tier answers 429/503 when busy
 async def make_image_prompt(observation: str) -> str:
     """Turn a chat message into a short English text-to-image prompt.
 
-    Sent as a system message so it never lands in any chat history.
+    Stateless and persona-free, so it never lands in any chat history.
     """
     instruction = (
         f"{IMAGE_GEN_INPUT_PROMPT.format(observation=observation)}\n\n"
@@ -663,10 +730,23 @@ async def make_image_prompt(observation: str) -> str:
         "что изображено, обстановка, стиль. Без текста и надписей на картинке. "
         "Ничего не генерируй сам и ничего не добавляй от себя."
     )
-    raw = await ask_agent([{"role": "system", "content": instruction}], chat_id=0)
-    lines = [l.strip().strip('"\'«»').strip() for l in clean_openai_reply(raw or "").splitlines()]
+    raw = await agent_client.ask_stateless(instruction)
+    lines = [l.strip().strip('"\'«»').strip() for l in (raw or "").splitlines()]
     lines = [l for l in lines if l]
-    return lines[0][:400] if lines else ""
+    prompt = lines[0][:400] if lines else ""
+    if not _looks_like_english_prompt(prompt):
+        logging.warning(f"[image-gen] rejected non-prompt output: {prompt!r}")
+        return ""
+    return prompt
+
+
+def _looks_like_english_prompt(text: str) -> bool:
+    """A real image prompt is English; a refusal or in-character chat reply isn't."""
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) < 15:
+        return False
+    latin = sum(1 for c in letters if c.isascii())
+    return latin / len(letters) >= 0.9 and "@" not in text
 
 
 async def fetch_pollinations_image(prompt: str) -> bytes | None:
@@ -772,15 +852,32 @@ def clean_openai_reply(text: str) -> str:
     import re
 
     pattern = r"[\{【]\d+:[^】}]+[】\}]"
-    return thin_emoji(re.sub(pattern, "", text or "").strip())
+    text = re.sub(pattern, "", text or "").strip()
+    return thin_emoji(tidy_reply(fix_mentions(text, KNOWN_BOTS)))
+
+
+COMMON_RULES_FILE = os.path.join("prompts", "_common", "system_rules.yaml")
+KNOWN_BOTS = sorted(
+    d for d in (os.listdir("prompts") if os.path.isdir("prompts") else [])
+    if d.endswith("_bot") and d != "default_bot"
+)
 
 
 def load_system_prompt() -> str:
-    """Return the full contents of the system prompt file."""
+    """Return the bot's system prompt plus the rules shared by all personas."""
     if not os.path.exists(SYSTEM_PROMPT_FILE):
         return ""
     with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
-        return f.read()
+        prompt = f.read()
+    if os.path.exists(COMMON_RULES_FILE):
+        with open(COMMON_RULES_FILE, "r", encoding="utf-8") as f:
+            prompt = f"{prompt.rstrip()}\n\n{f.read()}"
+    if BOT_USERNAME:
+        prompt += (
+            f"\n\nТвой ник в Telegram: @{BOT_USERNAME}. Сообщения с этим ником обращены к тебе. "
+            "Себя по нику не упоминай, ники других пиши точно латиницей, как они есть."
+        )
+    return prompt
 
 
 # History loading and scheduled summarization removed - now handled by agent_client
@@ -814,7 +911,11 @@ async def startup() -> None:
     asyncio.create_task(nudge_inactive_chats())
     asyncio.create_task(periodic_history_save())
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        agent_client.save_histories_to_disk()
+        await agent_client.shutdown()
 
 
 def main() -> None:

@@ -45,6 +45,7 @@ class FakeTarget:
 
 @pytest.mark.asyncio
 async def test_send_nudge_with_image(monkeypatch):
+    """The picture goes out WITH the text as its caption, in one message."""
     target = FakeTarget()
     gen_mock = AsyncMock(return_value=b'dummy')
     monkeypatch.setattr(main, 'generate_image_from_observation', gen_mock)
@@ -52,21 +53,30 @@ async def test_send_nudge_with_image(monkeypatch):
 
     await main.send_nudge_with_image(target, 1, 'hello', caption='cap', is_message=True)
 
-    assert len(target.answer_calls) == 1
+    assert target.answer_calls == []
     assert len(target.answer_photo_calls) == 1
+    assert target.answer_photo_calls[0][1]['caption'] == 'hello'
     assert target.send_photo_calls == []
 
-    # Reset lists for bot case
-    target.answer_calls.clear()
     target.answer_photo_calls.clear()
-    target.send_message_calls.clear()
-    target.send_photo_calls.clear()
-
     await main.send_nudge_with_image(target, 1, 'hello', caption='cap', is_message=False)
 
-    assert len(target.send_message_calls) == 1
+    assert target.send_message_calls == []
     assert len(target.send_photo_calls) == 1
+    assert target.send_photo_calls[0][1]['caption'] == 'hello'
     assert target.answer_photo_calls == []
+
+
+@pytest.mark.asyncio
+async def test_send_nudge_text_only_when_image_fails(monkeypatch):
+    target = FakeTarget()
+    monkeypatch.setattr(main, 'generate_image_from_observation', AsyncMock(return_value=None))
+    monkeypatch.setattr(main.random, 'random', lambda: 0)
+
+    await main.send_nudge_with_image(target, 1, 'hello', is_message=False)
+
+    assert len(target.send_message_calls) == 1
+    assert target.send_photo_calls == []
 
 
 @pytest.mark.asyncio

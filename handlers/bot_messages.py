@@ -43,7 +43,10 @@ REPLY_DELAY = (10, 40)      # seconds a bot "types" before answering another bot
 ADDRESSED_HINT = "К тебе обратился или тебе ответил другой участник чата. Ответь коротко, по-человечески."
 NATURAL_HINT = (
     "Не заканчивай реплику вопросом без нужды — чаще просто отреагируй, согласись, пошути или поделись своим. "
-    "Не повторяй словечки и фразы, которые ты уже говорил в последних сообщениях."
+    "Не повторяй словечки и фразы, которые ты уже говорил в последних сообщениях. "
+    "Не подхватывай последнее слово собеседника и не крути его дальше (бокал → «бокал не виноват»): "
+    "добавь своё — мнение, случай, деталь — или коротко закрой тему. "
+    "Не выдумывай договорённости, время и место встреч, которых в чате не было."
 )
 CLOSING_HINT = (
     "Это последняя реплика в этой ветке разговора: коротко закрой её (согласись, пошути, отмахнись), "
@@ -187,6 +190,7 @@ async def handle_bot_text(message, ctx) -> None:
     sender = message.from_user.username or str(message.from_user.id)
     text = message.text or ""
     ctx.last_activity_time[chat_id] = datetime.now()
+    logging.info(f"[in] {chat_id} {sender}: {text.replace(chr(10), ' / ')[:500]}")
 
     addressed = is_addressed(message, ctx.bot_username, ctx.name_mention_re)
     if not may_react(message, ctx.bot_username, addressed=addressed):
@@ -194,7 +198,9 @@ async def handle_bot_text(message, ctx) -> None:
         agent_client.inject_external_message(chat_id, sender, text)
         return
 
-    prompt = re.sub(re.escape(f"@{ctx.bot_username}"), "", text, flags=re.IGNORECASE).strip()
+    # Keep our own @handle in the text: cutting it out left "Пошли бы, но  уже…"
+    # gaps that the models then copied. The system prompt tells the bot its handle.
+    prompt = text.strip()
     try:
         answer = await _with_human_pause(ctx, chat_id, _answer(message, ctx, sender, prompt, addressed))
     except Exception as e:
@@ -210,9 +216,10 @@ async def handle_bot_photo(message, ctx) -> None:
     if not may_react(message, ctx.bot_username, addressed=addressed):
         return
     photo_bytes = await ctx.bot.download(message.photo[-1])
-    prompt = message.caption or ctx.image_default_prompt
+    sender = message.from_user.username or str(message.from_user.id)
+    logging.info(f"[in] {chat_id} {sender}: [photo] {message.caption or ''}")
     answer = await _with_human_pause(
-        ctx, chat_id, ctx.ask_openai_image(photo_bytes.read(), prompt, chat_id=chat_id))
+        ctx, chat_id, ctx.ask_openai_image(photo_bytes.read(), message.caption, chat_id=chat_id, sender=sender))
     await _send_reply(message, ctx, answer)
 
 

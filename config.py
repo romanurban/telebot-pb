@@ -44,6 +44,7 @@ IMAGE_DEFAULT_PROMPT = _prompt_data.get("image_default_prompt", "")
 CHAT_REACT_PROMPT = _prompt_data.get("chat_react_prompt", "")
 IMAGE_GEN_INPUT_PROMPT = _prompt_data.get("image_gen_input_prompt", "")
 _name_patterns = _prompt_data.get("name_mention_patterns", [])
+CYRILLIC_ONLY = bool(_prompt_data.get("cyrillic_only", False))
 NAME_MENTION_RE = re.compile("|".join(_name_patterns), re.IGNORECASE) if _name_patterns else None
 
 FIRST_NUDGE_PROMPT = NUDGE_SYSTEM_PROMPTS[0] if NUDGE_SYSTEM_PROMPTS else ""

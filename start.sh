@@ -102,6 +102,17 @@ stop_session() {
     fi
 }
 
+# Keep one previous log: <name>.log -> <name>.log.1 once it passes LOG_MAX_BYTES.
+LOG_MAX_BYTES=${LOG_MAX_BYTES:-5000000}
+rotate_log() {
+    local log="$1" size
+    [[ -f "$log" ]] || return 0
+    size=$(wc -c < "$log" 2>/dev/null || echo 0)
+    if [[ "$size" -gt "$LOG_MAX_BYTES" ]]; then
+        mv -f "$log" "$log.1"
+    fi
+}
+
 # Start a named process. In tmux mode creates a session; otherwise
 # runs in background and writes a PID file.
 # Attaches to tmux only when NO_ATTACH is not set.
@@ -115,6 +126,7 @@ start_session() {
         fi
     else
         mkdir -p "$PID_DIR"
+        rotate_log "$PID_DIR/$name.log"
         echo "Starting '$name' (background)"
         bash -c "exec $run_cmd" >> "$PID_DIR/$name.log" 2>&1 &
         local pid=$!
@@ -255,12 +267,21 @@ if [[ "$TARGET" == "autoupdate" ]]; then
             fi
         fi
 
-        git fetch origin
+        # A failed fetch/pull must not kill the watcher (set -e is on).
+        if ! git fetch origin; then
+            echo "$(date): git fetch failed, will retry."
+            sleep "$INTERVAL"
+            continue
+        fi
         LOCAL=$(git rev-parse HEAD)
         REMOTE=$(git rev-parse @{u})
         if [[ "$LOCAL" != "$REMOTE" ]]; then
             echo "$(date): Updates found. Pulling and restarting..."
-            git pull --ff-only
+            if ! git pull --ff-only; then
+                echo "$(date): git pull failed (local changes?), not restarting. Check 'git status'."
+                sleep "$INTERVAL"
+                continue
+            fi
             sessions=$(running_targets)
             restart_targets "$sessions"
         elif [[ "$changed_env" == true ]]; then

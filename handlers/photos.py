@@ -15,11 +15,11 @@ async def handle_photo_message(message, ctx: BotContext):
     photo = message.photo[-1]
     photo_bytes = await ctx.bot.download(photo)
     image_bytes = photo_bytes.read()
-    prompt = message.caption if message.caption else ctx.image_default_prompt
     chat_id = message.chat.id
+    sender = message.from_user.username if message.from_user else None
     ctx.last_activity_time[chat_id] = datetime.now()
     ctx.messages_since_bot_reply[chat_id] = ctx.messages_since_bot_reply.get(chat_id, 0) + 1
-    answer = await ctx.ask_openai_image(image_bytes, prompt, chat_id=chat_id)
+    answer = await ctx.ask_openai_image(image_bytes, message.caption, chat_id=chat_id, sender=sender)
     if not answer or not answer.strip():
         return  # couldn't see the image: don't react at all
     ctx.mark_bot_replied(chat_id)

@@ -17,10 +17,27 @@ async def test_daily_nudge_claim_allows_only_one_bot(monkeypatch, tmp_path):
     claim_dir = str(tmp_path / 'claims')
     os.makedirs(claim_dir)
     monkeypatch.setattr(claims, 'CLAIM_DIR', claim_dir)
+    monkeypatch.setattr(claims, 'NUDGE_DIR', str(tmp_path / 'nudges'))
 
     now = datetime(2026, 3, 28, 10, 0, 0)
     assert claims.try_claim_nudge(100, 'bot_a', now=now) is True
     assert claims.try_claim_nudge(100, 'bot_b', now=now) is False
+
+
+def test_nudge_claim_survives_claim_cleanup_and_reopens_after_gap(monkeypatch, tmp_path):
+    from datetime import timedelta
+    claim_dir = str(tmp_path / 'claims')
+    os.makedirs(claim_dir)
+    monkeypatch.setattr(claims, 'CLAIM_DIR', claim_dir)
+    monkeypatch.setattr(claims, 'NUDGE_DIR', str(tmp_path / 'nudges'))
+
+    now = datetime(2026, 10, 20, 12, 0, 0)
+    assert claims.try_claim_nudge(5, 'bot_a', now=now) is True
+    claims.cleanup_old_claims(max_age=-1)  # wipes CLAIM_DIR completely
+    assert claims.try_claim_nudge(5, 'bot_a', now=now + timedelta(minutes=10)) is False
+    assert claims.try_claim_nudge(5, 'bot_b', now=now + timedelta(minutes=30)) is False
+    assert claims.try_claim_nudge(5, 'bot_c', now=now + timedelta(minutes=61)) is True
+    assert claims.try_claim_nudge(6, 'bot_a', now=now) is True  # other chats are independent
 
 
 @pytest.mark.asyncio
