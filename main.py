@@ -567,6 +567,63 @@ async def send_nudge_with_image(target, chat_id, answer, caption="", is_message=
         logging.error(f"Failed to send nudge to chat {chat_id}: {e}")
 
 
+async def _caption_for_picture(description: str, kind: str) -> str:
+    """A short comment in the bot's own voice for a picture it is about to post."""
+    raw = await agent_client.ask_stateless(
+        f"Ты сам выкладываешь в чат {kind}. Вот что на картинке: {description}\n"
+        "Напиши короткую подпись от себя, 3–12 слов, в своём стиле. Не пересказывай картинку. "
+        "Только подпись, без кавычек.",
+        persona=True,
+    )
+    caption = clean_openai_reply(raw or "").strip().strip('"«»')
+    if CYRILLIC_ONLY and latin_problem(caption):
+        return ""
+    return caption
+
+
+async def send_media_nudge(target, chat_id: int, prompt: str, *, is_message: bool) -> str | None:
+    """Post a meme / picture of the day for a nudge that asks for one.
+
+    The free models often called the tool but dropped the image link, so the
+    chat got "Прикол. Или просто картинка." with no picture. Here the code
+    fetches the image itself and asks the model only for a caption.
+    Returns the posted caption (or a marker) if it handled the nudge, else None.
+    """
+    if "retrieve_joke" in prompt:
+        kind, getter = "мем", retrieve_joke
+    elif "get_picture_of_the_day" in prompt:
+        kind, getter = "картинку дня", get_picture_of_the_day
+    else:
+        return None
+    path = None
+    try:
+        got = await getter()
+        path, source_caption = (got if isinstance(got, tuple) else (got, ""))
+        try:
+            description = await analyze_image_via_mcp(path, VISION_DESCRIBE_PROMPT)
+            caption = await _caption_for_picture(description, kind)
+        except Exception as e:
+            logging.warning(f"[nudge-media] no caption for {kind}: {e}")
+            caption = ""  # can't see it: post the picture without our comment
+        if not caption and source_caption:
+            caption = await style_caption(source_caption, chat_id=chat_id)
+        photo = FSInputFile(path)
+        if is_message:
+            await target.answer_photo(photo, caption=caption or None)
+        else:
+            await target.send_photo(chat_id, photo, caption=caption or None)
+        return caption or f"[{kind}]"
+    except Exception as e:
+        logging.error(f"[nudge-media] could not post {kind} in {chat_id}: {e}")
+        return None
+    finally:
+        if path and isinstance(path, str):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 _bot_ctx: BotContext | None = None
 
 
@@ -830,6 +887,7 @@ async def nudge_inactive_chats(
             nudge_loop_started_at_ref=nudge_started_ref,
             bot_unmentioned_count=bot_unmentioned_count,
             get_nudge_prompt_for_chat=_get_nudge_prompt,
+            send_media_nudge=send_media_nudge,
         )
     finally:
         _state.nudge_loop_started_at = nudge_started_ref[0]

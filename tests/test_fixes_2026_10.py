@@ -162,3 +162,66 @@ def test_maksim_lives_in_imanta():
     text = open(os.path.join("prompts", "neuromaksim_bot", "system_prompt.yaml"), encoding="utf-8").read()
     nudges = open(os.path.join("prompts", "neuromaksim_bot", "bot_prompts.yaml"), encoding="utf-8").read()
     assert "Imanta" in text and "Ziepniekalns" not in text + nudges
+
+
+def test_echo_check_prefix_roots_and_opening_word():
+    from message_filter import echo_problem
+    assert echo_problem("Молчит — значит согласен.", "Молчание — тоже реакция.")
+    assert echo_problem("Шутка зашла. Без смеха.", "Ладно, шутка удалась.")
+    for reply, prev in [
+        ("Даже у осьминога бывают задержки.", "Три сердца, синяя кровь — и всё равно по расписанию не ходят."),
+        ("Сам не помню, о чём речь.", "главное никому не напоминать"),
+        ("Пустая тара — не валюта. Кэссу не обманешь.", "Женщина пытается оплатить пустой бутылкой из-под кефира."),
+    ]:
+        assert echo_problem(reply, prev) is None, reply
+
+
+class _Target:
+    def __init__(self):
+        self.photos = []
+
+    async def send_photo(self, chat_id, photo, caption=None):
+        self.photos.append((chat_id, caption))
+
+
+def test_meme_nudge_is_fetched_in_code(monkeypatch, tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import main
+    meme = tmp_path / "meme.jpg"
+    meme.write_bytes(b"img")
+    monkeypatch.setattr(main, "retrieve_joke", AsyncMock(return_value=str(meme)))
+    monkeypatch.setattr(main, "analyze_image_via_mcp", AsyncMock(return_value="Кот в коробке"))
+    monkeypatch.setattr(agent_client, "ask_stateless", AsyncMock(return_value="Пятничный кот одобряет"))
+    target = _Target()
+    posted = asyncio.run(main.send_media_nudge(target, -1, "Вызови retrieve_joke и отправь мем с комментарием.", is_message=False))
+    assert posted == "Пятничный кот одобряет"
+    assert target.photos == [(-1, "Пятничный кот одобряет")]
+    assert not meme.exists()  # temp file cleaned up
+
+
+def test_meme_without_vision_is_posted_without_caption(monkeypatch, tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import main
+    meme = tmp_path / "meme.jpg"
+    meme.write_bytes(b"img")
+    monkeypatch.setattr(main, "retrieve_joke", AsyncMock(return_value=str(meme)))
+    monkeypatch.setattr(main, "analyze_image_via_mcp", AsyncMock(side_effect=RuntimeError("vision down")))
+    target = _Target()
+    posted = asyncio.run(main.send_media_nudge(target, -1, "Получи мем через retrieve_joke и отправь его.", is_message=False))
+    assert posted == "[мем]" and target.photos == [(-1, None)]
+
+
+def test_text_nudges_are_not_media(monkeypatch):
+    import asyncio
+    import main
+    assert asyncio.run(main.send_media_nudge(_Target(), -1, "Скажи случайный факт.", is_message=False)) is None
+
+
+def test_meme_fetch_failure_falls_back_to_normal_nudge(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import main
+    monkeypatch.setattr(main, "retrieve_joke", AsyncMock(side_effect=RuntimeError("no meme")))
+    assert asyncio.run(main.send_media_nudge(_Target(), -1, "retrieve_joke", is_message=False)) is None

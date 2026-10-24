@@ -134,29 +134,53 @@ _STOP = {
 _WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё]+")
 
 
-def _stems(text: str) -> set[str]:
+def _words(text: str) -> set[str]:
     text = re.sub(r"@\w+|https?://\S+", " ", text or "")
     words = [w.lower().replace("ё", "е") for w in _WORD_RE.findall(text)]
-    return {w[:5] for w in words if len(w) >= 4 and w not in _STOP}
+    return {w for w in words if len(w) >= 4 and w not in _STOP}
+
+
+def _same_root(a: str, b: str) -> bool:
+    """Crude Russian root match: 5 common letters, or 4 when both words are 5+ long
+    (catches «молчание» / «молчит», «навеса» / «навес»)."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n >= 5 or (n >= 4 and min(len(a), len(b)) >= 5) or a == b
 
 
 def echo_problem(reply: str, previous: str | None) -> str | None:
     """Return a reason if ``reply`` mostly re-uses the words of ``previous``.
 
     Catches the word-rally pattern ("без возврата" -> "без возврата — это
-    преимущество", "навеса нет" -> "навеса нет — мерзнешь") that a prompt rule
-    alone doesn't stop on the free models. Crude 5-letter stems are enough for Russian.
+    преимущество", "молчание" -> "молчит — значит согласен") that a prompt rule
+    alone doesn't stop on the free models.
     """
     if not reply or not previous:
         return None
-    mine, theirs = _stems(reply), _stems(previous)
+    mine, theirs = _words(reply), _words(previous)
     if not mine:
         return None
-    shared = mine & theirs
+    shared = sorted(w for w in mine if any(_same_root(w, t) for t in theirs))
     if len(shared) >= 2 and len(shared) / len(mine) >= 0.4:
-        return f"ответ повторяет слова собеседника ({', '.join(sorted(shared))})"
+        return f"ответ повторяет слова собеседника ({', '.join(shared)})"
     if len(mine) <= 3 and len(shared) >= 1 and len(shared) / len(mine) >= 0.5:
-        return f"ответ подхватывает слово собеседника ({', '.join(sorted(shared))})"
+        return f"ответ подхватывает слово собеседника ({', '.join(shared)})"
+    # Rallies open with the picked-up word: «Молчит — значит согласен» after «Молчание — тоже реакция».
+    first = _first_word(reply)
+    if len(mine) <= 4 and first and any(_same_root(first, t) for t in theirs):
+        return f"ответ начинается со слова собеседника ({first})"
+    return None
+
+
+def _first_word(text: str) -> str | None:
+    text = re.sub(r"@\w+|https?://\S+", " ", text or "")
+    for w in _WORD_RE.findall(text):
+        w = w.lower().replace("ё", "е")
+        if len(w) >= 4 and w not in _STOP:
+            return w
     return None
 
 

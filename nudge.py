@@ -133,9 +133,16 @@ async def nudge_inactive_chats(
     nudge_loop_started_at_ref,
     bot_unmentioned_count,
     get_nudge_prompt_for_chat,
+    send_media_nudge=None,
 ):
     if force and force_chat_id is not None and force_message is not None:
         system_prompt = get_nudge_prompt_for_chat(force_chat_id)
+        if send_media_nudge is not None:
+            posted = await send_media_nudge(force_message, force_chat_id, system_prompt, is_message=True)
+            if posted is not None:
+                remember_nudge(force_chat_id, posted)
+                mark_bot_replied(force_chat_id)
+                return
         message_list = build_nudge_messages(system_prompt, load_recent_nudges(force_chat_id))
         raw_answer = await ask_agent(message_list, chat_id=force_chat_id)
         answer = clean_openai_reply(raw_answer)
@@ -215,6 +222,12 @@ async def nudge_inactive_chats(
                 try:
                     agent_client.clear_history(chat_id)
                     system_prompt = get_nudge_prompt_for_chat(chat_id)
+                    if send_media_nudge is not None:
+                        posted = await send_media_nudge(bot, chat_id, system_prompt, is_message=False)
+                        if posted is not None:
+                            remember_nudge(chat_id, posted)
+                            mark_bot_replied(chat_id)
+                            continue
                     message_list = build_nudge_messages(system_prompt, load_recent_nudges(chat_id))
                     raw_answer = await ask_agent(message_list, chat_id=chat_id)
                     answer = clean_openai_reply(raw_answer)
