@@ -33,7 +33,21 @@ RECENT_FRAME = (
     "Если задача ведёт к тому же самому (тот же факт дня, та же тема), возьми из результата инструмента другое "
     "или выбери другую тему сам."
 )
-RECENT_KEEP = 10
+RECENT_KEEP = 20
+FALLBACK_TEXT_PROMPT = "Чат затих. Скажи что-нибудь своё: короткое наблюдение из жизни или вопрос к остальным."
+
+
+def is_media_prompt(prompt: str) -> bool:
+    return "retrieve_joke" in prompt or "get_picture_of_the_day" in prompt
+
+
+def text_only_prompt(get_prompt, chat_id: int) -> str:
+    """Pick a nudge prompt that doesn't promise a picture (used after a picture nudge failed)."""
+    for _ in range(10):
+        prompt = get_prompt(chat_id)
+        if not is_media_prompt(prompt):
+            return prompt
+    return FALLBACK_TEXT_PROMPT
 
 
 def _recent_file(chat_id: int) -> str:
@@ -139,10 +153,12 @@ async def nudge_inactive_chats(
         system_prompt = get_nudge_prompt_for_chat(force_chat_id)
         if send_media_nudge is not None:
             posted = await send_media_nudge(force_message, force_chat_id, system_prompt, is_message=True)
-            if posted is not None:
+            if posted:
                 remember_nudge(force_chat_id, posted)
                 mark_bot_replied(force_chat_id)
                 return
+            if posted == "":
+                system_prompt = text_only_prompt(get_nudge_prompt_for_chat, force_chat_id)
         message_list = build_nudge_messages(system_prompt, load_recent_nudges(force_chat_id))
         raw_answer = await ask_agent(message_list, chat_id=force_chat_id)
         answer = clean_openai_reply(raw_answer)
@@ -224,10 +240,12 @@ async def nudge_inactive_chats(
                     system_prompt = get_nudge_prompt_for_chat(chat_id)
                     if send_media_nudge is not None:
                         posted = await send_media_nudge(bot, chat_id, system_prompt, is_message=False)
-                        if posted is not None:
+                        if posted:
                             remember_nudge(chat_id, posted)
                             mark_bot_replied(chat_id)
                             continue
+                        if posted == "":  # picture failed: don't let the model pretend it posted one
+                            system_prompt = text_only_prompt(get_nudge_prompt_for_chat, chat_id)
                     message_list = build_nudge_messages(system_prompt, load_recent_nudges(chat_id))
                     raw_answer = await ask_agent(message_list, chat_id=chat_id)
                     answer = clean_openai_reply(raw_answer)
@@ -236,6 +254,7 @@ async def nudge_inactive_chats(
                     answer = clean_self_mentions(answer, bot_username)
                     if not validate_bot_interaction(answer, bot_username):
                         logging.info(f"[nudge] Skipping invalid message in chat {chat_id}")
+                        claims.release_nudge(chat_id, bot_username)
                         continue
 
                     remember_nudge(chat_id, answer)
@@ -243,6 +262,7 @@ async def nudge_inactive_chats(
                     await send_nudge_with_image(bot, chat_id, answer, caption="", is_message=False)
                 except Exception as e:
                     logging.error(f"[nudge] Error sending nudge to chat {chat_id}: {e}", exc_info=True)
+                    claims.release_nudge(chat_id, bot_username)
                     continue
 
             await asyncio.sleep(nudge_check_interval)

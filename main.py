@@ -587,7 +587,10 @@ async def send_media_nudge(target, chat_id: int, prompt: str, *, is_message: boo
     The free models often called the tool but dropped the image link, so the
     chat got "Прикол. Или просто картинка." with no picture. Here the code
     fetches the image itself and asks the model only for a caption.
-    Returns the posted caption (or a marker) if it handled the nudge, else None.
+    Returns the posted caption (or a marker) if it posted, "" if this was a
+    picture nudge that failed (the caller must then switch to a text-only
+    prompt; otherwise the model announced «Картинка дня…» with no picture),
+    and None for an ordinary text nudge.
     """
     if "retrieve_joke" in prompt:
         kind, getter = "мем", retrieve_joke
@@ -614,8 +617,8 @@ async def send_media_nudge(target, chat_id: int, prompt: str, *, is_message: boo
             await target.send_photo(chat_id, photo, caption=caption or None)
         return caption or f"[{kind}]"
     except Exception as e:
-        logging.error(f"[nudge-media] could not post {kind} in {chat_id}: {e}")
-        return None
+        logging.error(f"[nudge-media] could not post {kind} in {chat_id}: {e!r}")
+        return ""
     finally:
         if path and isinstance(path, str):
             try:

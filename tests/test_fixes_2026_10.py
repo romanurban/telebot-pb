@@ -76,10 +76,10 @@ def test_recent_nudges_shared_and_fed_into_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(claims, "NUDGE_DIR", str(tmp_path / "nudges"))
     assert nudge.load_recent_nudges(-1) == []
     nudge.remember_nudge(-1, "22 октября 1964-го Сартр отказался от Нобелевской премии.")
-    for i in range(12):
+    for i in range(nudge.RECENT_KEEP + 2):
         nudge.remember_nudge(-1, f"opener {i}")
     recent = nudge.load_recent_nudges(-1)
-    assert len(recent) == nudge.RECENT_KEEP and recent[-1] == "opener 11"
+    assert len(recent) == nudge.RECENT_KEEP and recent[-1] == f"opener {nudge.RECENT_KEEP + 1}"
     msg = nudge.build_nudge_messages("Расскажи факт дня", ["Сартр отказался от премии"])[0]["content"]
     assert "Сартр отказался от премии" in msg and "Не повторяй" in msg
     assert "Недавно" not in nudge.build_nudge_messages("x")[0]["content"]
@@ -219,9 +219,39 @@ def test_text_nudges_are_not_media(monkeypatch):
     assert asyncio.run(main.send_media_nudge(_Target(), -1, "Скажи случайный факт.", is_message=False)) is None
 
 
-def test_meme_fetch_failure_falls_back_to_normal_nudge(monkeypatch):
+def test_meme_fetch_failure_signals_text_fallback(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock
     import main
     monkeypatch.setattr(main, "retrieve_joke", AsyncMock(side_effect=RuntimeError("no meme")))
-    assert asyncio.run(main.send_media_nudge(_Target(), -1, "retrieve_joke", is_message=False)) is None
+    # "" = picture nudge failed: the loop switches to a text-only prompt
+    assert asyncio.run(main.send_media_nudge(_Target(), -1, "retrieve_joke", is_message=False)) == ""
+
+
+def test_failed_picture_nudge_returns_empty_and_text_prompt_is_picked(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import main
+    import nudge
+    monkeypatch.setattr(main, "get_picture_of_the_day", AsyncMock(side_effect=RuntimeError("tool failed")))
+    assert asyncio.run(main.send_media_nudge(_Target(), -1, "get_picture_of_the_day", is_message=False)) == ""
+    prompts = iter(["Получи мем через retrieve_joke", "get_picture_of_the_day", "Скажи факт"])
+    assert nudge.text_only_prompt(lambda c: next(prompts), -1) == "Скажи факт"
+    assert nudge.text_only_prompt(lambda c: "retrieve_joke", -1) == nudge.FALLBACK_TEXT_PROMPT
+
+
+def test_release_nudge_frees_slot_for_other_bots(monkeypatch, tmp_path):
+    import claims
+    from datetime import datetime, timedelta
+    monkeypatch.setattr(claims, "NUDGE_DIR", str(tmp_path / "n"))
+    now = datetime(2026, 10, 26, 15, 48)
+    assert claims.try_claim_nudge(1, "neuromans_bot", now=now)
+    claims.release_nudge(1, "neuroyury_bot")  # not ours: no effect
+    assert not claims.try_claim_nudge(1, "neuromaksim_bot", now=now + timedelta(minutes=5))
+    claims.release_nudge(1, "neuromans_bot")
+    assert claims.try_claim_nudge(1, "neuromaksim_bot", now=now + timedelta(minutes=5))
+
+
+def test_recent_list_is_long_enough_for_two_days():
+    import nudge
+    assert nudge.RECENT_KEEP >= 20

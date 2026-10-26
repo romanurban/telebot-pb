@@ -97,6 +97,21 @@ def try_claim_nudge(chat_id: int, bot_username: str, now: datetime | None = None
             pass
 
 
+def release_nudge(chat_id: int, bot_username: str) -> None:
+    """Give the nudge slot back when our nudge produced nothing, so another bot
+    can open a thread now instead of the chat staying silent for NUDGE_MIN_GAP."""
+    last_file = os.path.join(NUDGE_DIR, f"{chat_id}.last")
+    try:
+        with open(last_file) as f:
+            parts = f.read().split()
+        if len(parts) > 1 and parts[1] == bot_username:
+            with open(last_file, "w") as f:
+                f.write("0 released")
+            logging.info(f"[nudge-claim] {bot_username} released chat={chat_id}")
+    except OSError:
+        pass
+
+
 def last_nudger(chat_id: int) -> str | None:
     """Username of the bot that nudged ``chat_id`` last, if known."""
     try:
