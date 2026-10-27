@@ -3,6 +3,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from urllib.parse import quote
 import json
+import re
 import random
 import os
 from hashlib import sha256
@@ -242,52 +243,156 @@ async def get_picture_of_the_day(date: str = "") -> str:
     return json.dumps({"url": image_url, "caption": caption})
 
 
+# Memes: Reddit via meme-api.com (reddit.com itself answers 403 to servers).
+# (subreddit, minimum upvotes, weight) — mostly Russian-language, some English classics.
+MEME_SOURCES = [
+    ("KafkaFPS", 100, 3),
+    ("Pikabu", 100, 3),
+    ("dankmemes", 1500, 2),
+    ("me_irl", 1000, 1),
+]
+SEEN_MEMES_FILE = "/tmp/telebot_nudges/memes_seen.json"
+SEEN_MEMES_KEEP = 300
+
+
+def _load_seen(path: str) -> list[str]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return list(json.load(f))
+    except (OSError, ValueError):
+        return []
+
+
+def _save_seen(path: str, items: list[str], keep: int) -> None:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(items[-keep:], f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
+def _pick_meme(memes: list[dict], min_ups: int, seen: set[str]) -> dict | None:
+    good = [
+        m for m in memes
+        if not m.get("nsfw") and not m.get("spoiler") and m.get("ups", 0) >= min_ups
+        and str(m.get("url", "")).lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+        and m.get("url") not in seen
+    ]
+    return max(good, key=lambda m: m.get("ups", 0)) if good else None
+
+
+async def _memify_fallback(session) -> str | None:
+    import re
+    try:
+        async with session.get("https://www.memify.ru/highfive/", ssl=False) as resp:
+            html = await resp.text()
+        urls = re.findall(r"https://[^\"']*?memify\.ru/[^\"']+\.(?:jpe?g|png|webp)", html, re.IGNORECASE)
+        return random.choice(urls) if urls else None
+    except Exception:
+        return None
+
+
 @mcp.tool()
 async def retrieve_joke() -> str:
-    """Fetch a random meme image and return the direct image URL."""
+    """Fetch a random popular meme (never one already posted) and return the direct image URL."""
+    seen = _load_seen(SEEN_MEMES_FILE)
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(headers={"User-Agent": _DEFAULT_USER_AGENT}, timeout=timeout,
+                                     trust_env=True) as session:
+        sources = list(MEME_SOURCES)
+        random.shuffle(sources)
+        sources.sort(key=lambda s: -s[2] * random.random())  # weighted order, still varied
+        for sub, min_ups, _w in sources:
+            try:
+                async with session.get(f"https://meme-api.com/gimme/{sub}/25") as resp:
+                    data = await resp.json(content_type=None)
+            except Exception:
+                continue
+            meme = _pick_meme(data.get("memes") or [], min_ups, set(seen))
+            if meme:
+                _save_seen(SEEN_MEMES_FILE, seen + [meme["url"]], SEEN_MEMES_KEEP)
+                return meme["url"]
+        url = await _memify_fallback(session)
+        if url and url not in seen:
+            _save_seen(SEEN_MEMES_FILE, seen + [url], SEEN_MEMES_KEEP)
+            return url
+    raise RuntimeError("no fresh meme available")
 
+
+# Facts: Russian Wikipedia «Знаете ли вы?» — curated, editor-checked facts, each
+# linked to an article. Monthly archives go back years (100+ items per month).
+DYK_ARCHIVE = "Проект:Знаете ли вы/Архив рубрики/{ym}"
+DYK_FIRST_YEAR = 2016
+SEEN_FACTS_FILE = "/tmp/telebot_nudges/facts_seen.json"
+
+
+async def _wiki_parse(session, page: str) -> str:
+    url = "https://ru.wikipedia.org/w/api.php"
+    params = {"action": "parse", "page": page, "prop": "text", "format": "json", "formatversion": "2"}
+    async with session.get(url, params=params) as resp:
+        data = await resp.json(content_type=None)
+    return data.get("parse", {}).get("text", "")
+
+
+def _dyk_items(html_text: str) -> list[tuple[str, str]]:
+    """(teaser, linked article title) pairs from a «Знаете ли вы» page."""
+    import html
     import re
-    import aiohttp
 
-    headers = {"User-Agent": "Mozilla/5.0"}
-    async with aiohttp.ClientSession(headers=headers, trust_env=True) as session:
-        try:
-            async with session.get("https://www.memify.ru/highfive/", ssl=False) as resp:
-                html = await resp.text()
-            urls = re.findall(
-                r"https://[^\"']*?memify\.ru/[^\"']+\.(?:jpe?g|png|gif|webp)",
-                html,
-                re.IGNORECASE,
-            )
-        except Exception:
-            urls = []
-        if not urls:
-            return "https://i.imgflip.com/1bij.jpg"
-        img_url = random.choice(urls)
-    return img_url
+    out = []
+    for li in re.findall(r"<li[^>]*>(.*?)</li>", html_text, re.S):
+        link = re.search(r'<b>\s*<a [^>]*title="([^"]+)"', li) or re.search(r'<a [^>]*title="([^"]+)"', li)
+        teaser = html.unescape(re.sub(r"<[^>]+>", "", li)).replace("\xa0", " ").strip()
+        teaser = re.sub(r"\s*\(на илл\.\)", "", teaser)
+        if link and 30 <= len(teaser) <= 300 and not teaser.startswith(("Во избежание", "Пожалуйста", "Будьте", "И только", "Убедитесь")):
+            out.append((teaser, html.unescape(link.group(1))))
+    return out
+
+
+async def _wiki_summary(session, title: str) -> tuple[str, str]:
+    from urllib.parse import quote as _q
+
+    async with session.get(f"https://ru.wikipedia.org/api/rest_v1/page/summary/{_q(title.replace(' ', '_'))}") as resp:
+        data = await resp.json(content_type=None)
+    link = data.get("content_urls", {}).get("desktop", {}).get("page", "")
+    return (data.get("extract") or "").strip(), link
 
 
 @mcp.tool()
 async def retrieve_fact() -> str:
-    """Fetch a random fact from randstuff.ru and return the text."""
-
-    import re
-    from html import unescape
-    import aiohttp
-
-    headers = {"User-Agent": _DEFAULT_USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers, trust_env=True) as session:
-        async with session.get("https://randstuff.ru/fact/", ssl=False) as resp:
-            html = await resp.text()
-
-    match = re.search(r'<div id="fact".*?<td>(.*?)</td>', html, re.S)
-    if not match:
-        raise ValueError("fact not found")
-
-    fact = unescape(re.sub(r"<.*?>", "", match.group(1))).strip()
-    if not fact:
-        raise ValueError("fact not found")
-    return fact
+    """A curated interesting fact from Russian Wikipedia's «Знаете ли вы?» with a short explanation and link."""
+    seen = _load_seen(SEEN_FACTS_FILE)
+    now = datetime.now()
+    timeout = aiohttp.ClientTimeout(total=25)
+    async with aiohttp.ClientSession(headers={"User-Agent": _DEFAULT_USER_AGENT}, timeout=timeout,
+                                     trust_env=True) as session:
+        for _ in range(4):
+            year = random.randint(DYK_FIRST_YEAR, now.year)
+            month = random.randint(1, 12 if year < now.year else max(1, now.month - 1))
+            try:
+                items = _dyk_items(await _wiki_parse(session, DYK_ARCHIVE.format(ym=f"{year}-{month:02d}")))
+            except Exception:
+                continue
+            items = [it for it in items if it[0] not in seen]
+            if not items:
+                continue
+            teaser, title = random.choice(items)
+            try:
+                summary, link = await _wiki_summary(session, title)
+            except Exception:
+                summary, link = "", ""
+            _save_seen(SEEN_FACTS_FILE, seen + [teaser], 500)
+            sentences = re.split(r"(?<=[.!?])\s+", summary)
+            short = " ".join(sentences[:2])[:400]
+            parts = [teaser]
+            if short:
+                parts.append(f"Подробнее: {short}")
+            if link:
+                parts.append(link)
+            return "\n".join(parts)
+    raise RuntimeError("no fact available")
 
 
 @mcp.tool()

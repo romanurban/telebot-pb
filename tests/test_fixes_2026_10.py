@@ -320,3 +320,32 @@ def test_no_domestic_nudges_and_news_present():
         import re
         for word in (r"\bкран", r"\bсосед", r"\bпогод", r"\bбыт"):
             assert not re.search(word, text), (b, word)
+
+
+def test_meme_filter_skips_nsfw_gifs_seen_and_low_votes():
+    import mcp_server
+    memes = [
+        {"url": "https://i.redd.it/a.png", "ups": 900, "nsfw": True},
+        {"url": "https://i.redd.it/b.gif", "ups": 900},
+        {"url": "https://i.redd.it/c.png", "ups": 50},
+        {"url": "https://i.redd.it/d.jpg", "ups": 300},
+        {"url": "https://i.redd.it/e.png", "ups": 800},
+    ]
+    assert mcp_server._pick_meme(memes, 100, {"https://i.redd.it/e.png"})["url"] == "https://i.redd.it/d.jpg"
+    assert mcp_server._pick_meme(memes, 100, set())["url"] == "https://i.redd.it/e.png"
+    assert mcp_server._pick_meme(memes, 5000, set()) is None
+
+
+def test_dyk_parser_takes_facts_and_skips_editor_notes():
+    import mcp_server
+    html = (
+        '<ul><li>Пожалуйста, не вносите в шаблон существенных правок без согласования с участниками.</li>'
+        '<li>Первый эстонский <b><a href="/wiki/X" title="Мультфильм X">мультфильм</a></b> был найден '
+        'в архиве местного сообщества трезвенников.</li>'
+        '<li>Элитный курорт (на&#160;илл.) был великой <a href="/wiki/Y" title="Город Y">морской</a> торговой державой.</li></ul>'
+    )
+    items = mcp_server._dyk_items(html)
+    assert items == [
+        ("Первый эстонский мультфильм был найден в архиве местного сообщества трезвенников.", "Мультфильм X"),
+        ("Элитный курорт был великой морской торговой державой.", "Город Y"),
+    ]
