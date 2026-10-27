@@ -30,6 +30,7 @@ from datetime import datetime
 
 import agent_client
 import claims
+import nudge
 from aiogram.enums import ParseMode
 from message_filter import clean_self_mentions, validate_bot_interaction
 
@@ -200,7 +201,7 @@ async def handle_bot_text(message, ctx) -> None:
 
     # Keep our own @handle in the text: cutting it out left "Пошли бы, но  уже…"
     # gaps that the models then copied. The system prompt tells the bot its handle.
-    prompt = text.strip()
+    prompt = text.strip() + nudge.news_context(chat_id, text)
     try:
         answer = await _with_human_pause(ctx, chat_id, _answer(message, ctx, sender, prompt, addressed))
     except Exception as e:

@@ -592,6 +592,8 @@ async def send_media_nudge(target, chat_id: int, prompt: str, *, is_message: boo
     prompt; otherwise the model announced «Картинка дня…» with no picture),
     and None for an ordinary text nudge.
     """
+    if "get_news" in prompt:
+        return await send_news_nudge(target, chat_id, prompt, is_message=is_message)
     if "retrieve_joke" in prompt:
         kind, getter = "мем", retrieve_joke
     elif "get_picture_of_the_day" in prompt:
@@ -625,6 +627,69 @@ async def send_media_nudge(target, chat_id: int, prompt: str, *, is_message: boo
                 os.remove(path)
             except OSError:
                 pass
+
+
+async def fetch_news(region: str = "any") -> list[dict]:
+    async with sse_client(MCP_SERVER_URL) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            resp = await session.call_tool("get_news", {"region": region, "limit": 8})
+            if not resp.content or getattr(resp, "isError", False):
+                raise ValueError("no news returned")
+            return json.loads(resp.content[0].text)
+
+
+NEWS_PICK_PROMPT = (
+    "Ты делишься с друзьями в чате одной свежей новостью. Вот заголовки:\n{items}\n\n"
+    "Выбери ОДНУ, о которой интересно поболтать: курьёз, Латвия, спорт, технологии, наука, культура, "
+    "деньги и цены, политика без трагедий. Не бери новости о смертях, войне, обстрелах, катастрофах, "
+    "терактах и болезнях. Напиши к ней свой короткий комментарий (5–20 слов) в своём стиле — "
+    "реакцию, а не пересказ заголовка.{mention}\n"
+    'Ответь строго JSON одной строкой: {{"i": номер_новости, "comment": "твой комментарий"}}'
+)
+
+
+async def send_news_nudge(target, chat_id: int, prompt: str, *, is_message: bool) -> str:
+    """Post a real news link with the bot's comment; "" if it couldn't (caller falls back to text).
+
+    The code fetches the feeds and posts the link itself, so the model can't
+    invent news or drop the URL; it only picks an item and writes the comment.
+    """
+    import re
+    from nudge import load_recent_news, remember_news
+
+    region = "lv" if "Латви" in prompt else ("world" if "мир" in prompt.lower() else "any")
+    try:
+        seen = {n["link"] for n in load_recent_news(chat_id)}
+        items = [n for n in await fetch_news(region) if n["link"] not in seen]
+        if not items:
+            return ""
+        random.shuffle(items)
+        items = items[:12]
+        listing = "\n".join(f"{i}. [{n['source']}] {n['title']}" for i, n in enumerate(items))
+        others = [f"@{b}" for b in KNOWN_BOTS if b != BOT_USERNAME]
+        mention = (f" Иногда (не всегда) можно обратиться к одному из друзей по нику: {', '.join(others)}."
+                   if others else "")
+        raw = await agent_client.ask_stateless(NEWS_PICK_PROMPT.format(items=listing, mention=mention), persona=True)
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        data = json.loads(m.group(0)) if m else {}
+        idx = int(data.get("i", -1))
+        comment = clean_openai_reply(str(data.get("comment", ""))).strip().strip('"«»')
+        if not (0 <= idx < len(items)) or not comment:
+            logging.warning(f"[news] unusable pick: {raw!r}")
+            return ""
+        item = items[idx]
+        text = f"{comment}\n{item['link']}"
+        if is_message:
+            await target.answer(text)
+        else:
+            await target.send_message(chat_id, text)
+        remember_news(chat_id, item)
+        logging.info(f"[news] {item['source']}: {item['title']}")
+        return f"{comment} ({item['title']})"
+    except Exception as e:
+        logging.error(f"[news] could not post news in {chat_id}: {e!r}")
+        return ""
 
 
 _bot_ctx: BotContext | None = None

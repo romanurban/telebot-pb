@@ -330,6 +330,63 @@ async def generate_voice(text: str) -> str:
         f.write(data)
         return f.name
 
+NEWS_FEEDS = {
+    "lv": [("LSM", "https://rus.lsm.lv/rss/"), ("Delfi", "https://rus.delfi.lv/rss/index.xml")],
+    "world": [("BBC", "https://feeds.bbci.co.uk/russian/rss.xml"), ("Meduza", "https://meduza.io/rss/all")],
+}
+
+
+def _parse_rss(xml_text: str, source: str, limit: int) -> list[dict]:
+    import html
+    import re
+    import xml.etree.ElementTree as ET
+
+    items = []
+    root = ET.fromstring(xml_text)
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        if not title or not link:
+            continue
+        summary = html.unescape(re.sub(r"<[^>]+>", " ", item.findtext("description") or ""))
+        items.append({
+            "source": source,
+            "title": html.unescape(title),
+            "summary": re.sub(r"\s+", " ", summary).strip()[:300],
+            "link": link,
+            "published": (item.findtext("pubDate") or "").strip(),
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+@mcp.tool()
+async def get_news(region: str = "any", limit: int = 8) -> str:
+    """Fresh Russian-language news headlines as JSON: a list of {source, title, summary, link, published}.
+
+    ``region``: "lv" (Latvia: LSM, Delfi), "world" (BBC Russian, Meduza) or "any" (both).
+    Use it when someone asks what's new, or to share a real piece of news. Never invent news.
+    """
+    regions = ["lv", "world"] if region not in NEWS_FEEDS else [region]
+    feeds = [f for r in regions for f in NEWS_FEEDS[r]]
+    items: list[dict] = []
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(headers={"User-Agent": _DEFAULT_USER_AGENT}, timeout=timeout,
+                                     trust_env=True) as session:
+        for source, url in feeds:
+            try:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        continue
+                    items.extend(_parse_rss(await resp.text(), source, limit))
+            except Exception:
+                continue  # one dead feed shouldn't kill the others
+    if not items:
+        raise RuntimeError("no news feeds reachable")
+    return json.dumps(items, ensure_ascii=False)
+
+
 @mcp.tool()
 async def analyze_image(image_path: str, prompt: str = "Describe this image") -> str:
     """Analyze an image using a vision model and return a text description.

@@ -255,3 +255,68 @@ def test_release_nudge_frees_slot_for_other_bots(monkeypatch, tmp_path):
 def test_recent_list_is_long_enough_for_two_days():
     import nudge
     assert nudge.RECENT_KEEP >= 20
+
+
+def test_news_rss_parsing():
+    import mcp_server
+    xml = """<rss><channel><title>X</title>
+      <item><title>Рига &amp; новости</title><link>https://rus.lsm.lv/a</link>
+        <description>&lt;p&gt;Кратко   о главном&lt;/p&gt;</description><pubDate>Tue</pubDate></item>
+      <item><title></title><link>https://x</link></item></channel></rss>"""
+    items = mcp_server._parse_rss(xml, "LSM", 5)
+    assert items == [{"source": "LSM", "title": "Рига & новости", "summary": "Кратко о главном",
+                      "link": "https://rus.lsm.lv/a", "published": "Tue"}]
+
+
+class _NewsTarget:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, chat_id, text, **kw):
+        self.sent.append(text)
+
+
+def test_news_nudge_posts_real_link_and_skips_seen(monkeypatch, tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import claims
+    import main
+    import nudge
+    monkeypatch.setattr(claims, "NUDGE_DIR", str(tmp_path / "n"))
+    news = [{"source": "LSM", "title": "Старая", "summary": "", "link": "https://lsm/old"},
+            {"source": "LSM", "title": "В Риге открыли музей носков", "summary": "Кратко", "link": "https://lsm/new"}]
+    nudge.remember_news(-1, news[0])
+    monkeypatch.setattr(main, "fetch_news", AsyncMock(return_value=news))
+    monkeypatch.setattr(main.random, "shuffle", lambda x: None)
+    monkeypatch.setattr(agent_client, "ask_stateless",
+                        AsyncMock(return_value='{"i": 0, "comment": "Наконец-то культура"}'))
+    target = _NewsTarget()
+    posted = asyncio.run(main.send_news_nudge(target, -1, "get_news: новость из Латвии", is_message=False))
+    assert target.sent == ["Наконец-то культура\nhttps://lsm/new"]
+    assert "музей носков" in posted
+    assert "музей носков" in nudge.news_context(-1, "Наконец-то культура\nhttps://lsm/new")
+    assert nudge.news_context(-1, "просто текст") == ""
+
+
+def test_news_nudge_bad_pick_falls_back(monkeypatch, tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import claims
+    import main
+    monkeypatch.setattr(claims, "NUDGE_DIR", str(tmp_path / "n"))
+    monkeypatch.setattr(main, "fetch_news", AsyncMock(return_value=[{"source": "BBC", "title": "t", "summary": "", "link": "https://b/1"}]))
+    monkeypatch.setattr(agent_client, "ask_stateless", AsyncMock(return_value="не json"))
+    target = _NewsTarget()
+    assert asyncio.run(main.send_news_nudge(target, -1, "get_news", is_message=False)) == ""
+    assert target.sent == []
+
+
+def test_no_domestic_nudges_and_news_present():
+    import yaml
+    for b in ("neuroyury_bot", "neuromans_bot", "neuromaksim_bot"):
+        prompts = yaml.safe_load(open(os.path.join("prompts", b, "bot_prompts.yaml"), encoding="utf-8"))["nudge_system_prompts"]
+        text = " ".join(prompts).lower()
+        assert sum("get_news" in p for p in prompts) >= 4
+        import re
+        for word in (r"\bкран", r"\bсосед", r"\bпогод", r"\bбыт"):
+            assert not re.search(word, text), (b, word)

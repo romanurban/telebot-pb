@@ -38,7 +38,45 @@ FALLBACK_TEXT_PROMPT = "Чат затих. Скажи что-нибудь сво
 
 
 def is_media_prompt(prompt: str) -> bool:
-    return "retrieve_joke" in prompt or "get_picture_of_the_day" in prompt
+    return any(t in prompt for t in ("retrieve_joke", "get_picture_of_the_day", "get_news"))
+
+
+NEWS_KEEP = 40
+
+
+def _news_file(chat_id: int) -> str:
+    return os.path.join(claims.NUDGE_DIR, f"{chat_id}.news.json")
+
+
+def load_recent_news(chat_id: int) -> list[dict]:
+    """News items posted in this chat lately: [{link, title, summary}], shared by all bots."""
+    try:
+        with open(_news_file(chat_id), encoding="utf-8") as f:
+            return [x for x in json.load(f) if isinstance(x, dict) and x.get("link")][-NEWS_KEEP:]
+    except (OSError, ValueError):
+        return []
+
+
+def remember_news(chat_id: int, item: dict) -> None:
+    items = load_recent_news(chat_id) + [{k: item.get(k, "") for k in ("link", "title", "summary")}]
+    try:
+        os.makedirs(claims.NUDGE_DIR, exist_ok=True)
+        tmp = _news_file(chat_id) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(items[-NEWS_KEEP:], f, ensure_ascii=False)
+        os.replace(tmp, _news_file(chat_id))
+    except OSError as e:
+        logging.warning(f"[nudge] could not save recent news: {e}")
+
+
+def news_context(chat_id: int, text: str) -> str:
+    """Headline of a news link in ``text``, if a bot posted it: other bots only get the
+    message text (not Telegram's preview card), so they'd answer the bare URL."""
+    for item in reversed(load_recent_news(chat_id)):
+        if item["link"] in (text or ""):
+            summary = f" {item['summary']}" if item.get("summary") else ""
+            return f"\n[По ссылке новость: «{item['title']}».{summary}]"
+    return ""
 
 
 def text_only_prompt(get_prompt, chat_id: int) -> str:
