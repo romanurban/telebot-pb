@@ -841,7 +841,20 @@ async def style_caption(caption: str, *, chat_id: int) -> str:
 
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"  # classic endpoint: no key needed (gen.* requires one)
 POLLINATIONS_ATTEMPTS = 3
-POLLINATIONS_RETRY_WAIT = 12  # anonymous tier answers 429/503 when busy
+POLLINATIONS_RETRY_WAIT = 12  # after a server error (5xx)
+POLLINATIONS_RATE_WAIT = 46   # free tier: 1 image per 45 s per IP, shared by all bots on the server
+POLLINATIONS_MAX_WAIT = 60
+
+
+def _pollinations_wait(status: int, body: str, retry_after: str | None) -> float:
+    """Seconds to wait before the next try. On 402/429 the free tier says how long
+    ("Retry after 39s"); retrying sooner just burns the attempt."""
+    import re
+    if status in (402, 429):
+        m = re.search(r"[Rr]etry after (\d+)", body or "")
+        secs = int(m.group(1)) if m else (int(retry_after) if (retry_after or "").isdigit() else POLLINATIONS_RATE_WAIT)
+        return min(secs + 2, POLLINATIONS_MAX_WAIT)
+    return POLLINATIONS_RETRY_WAIT
 
 
 async def make_image_prompt(observation: str) -> str:
@@ -882,17 +895,20 @@ async def fetch_pollinations_image(prompt: str) -> bytes | None:
     params = {"width": "1024", "height": "1024", "nologo": "true", "seed": str(random.randint(1, 10**9))}
     timeout = aiohttp.ClientTimeout(total=120)
     for attempt in range(1, POLLINATIONS_ATTEMPTS + 1):
+        wait = POLLINATIONS_RETRY_WAIT
         try:
             async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 async with session.get(url, params=params) as resp:
                     ctype = resp.headers.get("content-type", "")
                     if resp.status == 200 and ctype.startswith("image/"):
                         return await resp.read()
-                    logging.warning(f"[image-gen] Pollinations attempt {attempt}: HTTP {resp.status} {ctype}")
+                    body = (await resp.text())[:300] if not ctype.startswith("image/") else ""
+                    wait = _pollinations_wait(resp.status, body, resp.headers.get("Retry-After"))
+                    logging.warning(f"[image-gen] Pollinations attempt {attempt}: HTTP {resp.status}; retry in {wait:.0f}s")
         except Exception as e:
             logging.warning(f"[image-gen] Pollinations attempt {attempt} failed: {e}")
         if attempt < POLLINATIONS_ATTEMPTS:
-            await asyncio.sleep(POLLINATIONS_RETRY_WAIT)
+            await asyncio.sleep(wait)
     return None
 
 

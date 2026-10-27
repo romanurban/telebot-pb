@@ -349,3 +349,19 @@ def test_dyk_parser_takes_facts_and_skips_editor_notes():
         ("Первый эстонский мультфильм был найден в архиве местного сообщества трезвенников.", "Мультфильм X"),
         ("Элитный курорт был великой морской торговой державой.", "Город Y"),
     ]
+
+
+def test_pollinations_waits_as_long_as_free_tier_asks():
+    import main
+    body = '{"status":402,"error":{"code":"FREE_LIMIT","message":"Free limit reached: 1 image every 45 seconds per IP. Retry after 39s"}}'
+    assert main._pollinations_wait(402, body, None) == 41
+    assert main._pollinations_wait(429, "", "20") == 22
+    assert main._pollinations_wait(402, "", None) == min(main.POLLINATIONS_RATE_WAIT + 2, main.POLLINATIONS_MAX_WAIT)
+    assert main._pollinations_wait(500, "boom", None) == main.POLLINATIONS_RETRY_WAIT
+
+
+def test_facts_need_context_rule_and_persona_exceptions():
+    rules = open(os.path.join("prompts", "_common", "system_rules.yaml"), encoding="utf-8").read()
+    assert "впервые слышит" in rules
+    for b in ("neuromans_bot", "neuromaksim_bot"):
+        assert "exception" in open(os.path.join("prompts", b, "system_prompt.yaml"), encoding="utf-8").read()
